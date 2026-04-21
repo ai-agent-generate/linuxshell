@@ -55,6 +55,7 @@ SELECT_POSTGRES=0
 SELECT_MYSQL=0
 SELECT_RABBITMQ=0
 SELECT_REDIS=0
+SELECT_PG_WRAPPER=0
 
 POSTGRES_PORT="$DEFAULT_POSTGRES_PORT"
 POSTGRES_DB="$DEFAULT_POSTGRES_DB"
@@ -81,6 +82,8 @@ MYSQL_PROJECT_NAME="${MYSQL_PROJECT_NAME:-mysql}"
 RABBITMQ_PROJECT_NAME="${RABBITMQ_PROJECT_NAME:-rabbitmq}"
 REDIS_PROJECT_NAME="${REDIS_PROJECT_NAME:-redis}"
 SHARED_NETWORK_NAME="${SHARED_NETWORK_NAME:-my_network}"
+PG_WRAPPER_BIN="${PG_WRAPPER_BIN:-/usr/local/bin/pg}"
+INSTALLED_PG_WRAPPER_USER=""
 
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -197,6 +200,7 @@ parse_service_selection() {
   SELECT_MYSQL=0
   SELECT_RABBITMQ=0
   SELECT_REDIS=0
+  SELECT_PG_WRAPPER=0
 
   for token in $selection; do
     normalized="$(to_lower "$token")"
@@ -216,6 +220,9 @@ parse_service_selection() {
       5|redis)
         SELECT_REDIS=1
         ;;
+      6|pg|pg-shortcut)
+        SELECT_PG_WRAPPER=1
+        ;;
       *)
         echo "Ignoring unknown selection: $token" >&2
         ;;
@@ -233,6 +240,7 @@ Select one or more components to install/deploy (space-separated or comma-separa
   3) MySQL
   4) RabbitMQ
   5) Redis
+  6) Install pg shortcut (PostgreSQL already running)
 EOF
 
   while true; do
@@ -240,7 +248,7 @@ EOF
     IFS= read -r selection
     parse_service_selection "$selection"
 
-    if (( SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS )); then
+    if (( SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS || SELECT_PG_WRAPPER )); then
       return 0
     fi
 
@@ -489,6 +497,29 @@ networks:
     external: true
     name: ${SHARED_NETWORK_NAME}
 EOF
+}
+
+install_pg_wrapper() {
+  local user="$1"
+
+  cat >"$PG_WRAPPER_BIN" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\$(docker inspect -f '{{.State.Running}}' postgres 2>/dev/null)" != "true" ]]; then
+  echo "PostgreSQL container 'postgres' is not running." >&2
+  exit 1
+fi
+
+if [ -t 0 ]; then
+  exec docker exec -it postgres psql -U "${user}" "\$@"
+else
+  exec docker exec -i postgres psql -U "${user}" "\$@"
+fi
+EOF
+  chmod +x "$PG_WRAPPER_BIN"
+  INSTALLED_PG_WRAPPER_USER="$user"
+  echo "Installed pg shortcut at ${PG_WRAPPER_BIN} (user: ${user})"
 }
 
 get_postgres_major_version() {
@@ -790,6 +821,9 @@ show_summary() {
   if (( SELECT_REDIS )); then
     echo "Redis: ${REDIS_COMPOSE_FILE} | data ${REDIS_DIR}/data | port ${REDIS_PORT} | network ${SHARED_NETWORK_NAME}"
   fi
+  if [[ -n "$INSTALLED_PG_WRAPPER_USER" ]]; then
+    echo "pg shortcut: ${PG_WRAPPER_BIN} (user: ${INSTALLED_PG_WRAPPER_USER})"
+  fi
 }
 
 main() {
@@ -810,6 +844,7 @@ main() {
   if (( SELECT_POSTGRES )); then
     configure_postgres
     prepare_postgres
+    install_pg_wrapper "$POSTGRES_USER"
   fi
 
   if (( SELECT_MYSQL )); then
@@ -828,6 +863,12 @@ main() {
   if (( SELECT_REDIS )); then
     configure_redis
     prepare_redis
+  fi
+
+  if (( SELECT_PG_WRAPPER && ! SELECT_POSTGRES )); then
+    local wrapper_user
+    wrapper_user="$(prompt_with_default "PostgreSQL username to bake into 'pg'" "postgres")"
+    install_pg_wrapper "$wrapper_user"
   fi
 
   show_summary

@@ -71,7 +71,8 @@ load_script() {
     POSTGRES_PORT POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD \
     MYSQL_PORT MYSQL_DB MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD \
     RABBITMQ_PORT RABBITMQ_MANAGEMENT_PORT RABBITMQ_WEB_STOMP_PORT RABBITMQ_USER RABBITMQ_PASSWORD \
-    REDIS_PORT REDIS_PASSWORD 2>/dev/null || true
+    REDIS_PORT REDIS_PASSWORD \
+    SELECT_PG_WRAPPER INSTALLED_PG_WRAPPER_USER 2>/dev/null || true
 
   if [[ "$preserved_data_root" == "__UNSET__" ]]; then
     unset DATA_ROOT 2>/dev/null || true
@@ -132,6 +133,11 @@ run_skeleton_tests() {
   assert_function_exists "detect_os"
   assert_function_exists "ensure_directories"
   assert_function_exists "main"
+
+  local standalone="${ROOT_DIR}/install-pg-wrapper.sh"
+  assert_file_exists "$standalone"
+  [[ -x "$standalone" ]] || fail "expected install-pg-wrapper.sh to be executable"
+  bash -n "$standalone" || fail "install-pg-wrapper.sh has syntax errors"
 }
 
 run_generation_tests() {
@@ -143,6 +149,8 @@ run_generation_tests() {
   export RABBITMQ_CONF_DIR="${temp_root}/rabbitmq/conf"
   export RABBITMQ_CONFIG_FILE="${RABBITMQ_CONF_DIR}/rabbitmq.conf"
   export RABBITMQ_ENABLED_PLUGINS_FILE="${RABBITMQ_CONF_DIR}/enabled_plugins"
+  export PG_WRAPPER_BIN="${temp_root}/usr/local/bin/pg"
+  mkdir -p "$(dirname "$PG_WRAPPER_BIN")"
 
   load_script
 
@@ -169,17 +177,31 @@ run_generation_tests() {
   assert_contains "${temp_root}/mysql/conf/my.cnf" "bind-address=0.0.0.0"
   assert_contains "${temp_root}/mysql/conf/my.cnf" "binlog_expire_logs_seconds=86400"
   assert_not_contains "${temp_root}/mysql/conf/my.cnf" "default-authentication-plugin=mysql_native_password"
-  assert_contains "${temp_root}/docker/docker-postgres.yml" "${temp_root}/postgres/data"
-  assert_contains "${temp_root}/docker/docker-postgres.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-postgres.yml" "${temp_root}/postgres:/var/lib/postgresql"
+  assert_contains "${temp_root}/docker/docker-postgres.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-postgres.yml" "- postgres"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "${temp_root}/mysql/conf/my.cnf:/etc/mysql/conf.d/99-custom.cnf:ro"
-  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "- mysql"
-  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "- rabbitmq"
   assert_contains "${temp_root}/docker/docker-redis.yml" "--requirepass redis123"
-  assert_contains "${temp_root}/docker/docker-redis.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-redis.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-redis.yml" "- redis"
+
+  assert_function_exists "install_pg_wrapper"
+  install_pg_wrapper "alice"
+
+  assert_file_exists "$PG_WRAPPER_BIN"
+  [[ -x "$PG_WRAPPER_BIN" ]] || fail "expected pg wrapper to be executable"
+  assert_contains "$PG_WRAPPER_BIN" "docker exec -it postgres psql -U \"alice\""
+  assert_contains "$PG_WRAPPER_BIN" "docker exec -i postgres psql -U \"alice\""
+  assert_contains "$PG_WRAPPER_BIN" "container 'postgres' is not running"
+
+  local summary_output
+  summary_output="$(show_summary 2>&1)"
+  [[ "$summary_output" == *"pg shortcut: ${PG_WRAPPER_BIN} (user: alice)"* ]] \
+    || fail "expected show_summary to include pg shortcut line"
 }
 
 run_helper_tests() {
@@ -211,9 +233,23 @@ run_helper_tests() {
   [[ "${SELECT_POSTGRES:-0}" -eq 1 ]] || fail "expected postgres selection from comma-separated input"
   [[ "${SELECT_REDIS:-0}" -eq 1 ]] || fail "expected redis selection from comma-separated input"
 
+  parse_service_selection "6"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 1 ]] || fail "expected pg wrapper selection from '6'"
+  [[ "${SELECT_CADDY:-0}" -eq 0 ]] || fail "did not expect caddy selection from '6'"
+
+  parse_service_selection "pg"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 1 ]] || fail "expected pg wrapper selection from 'pg'"
+
+  parse_service_selection "pg-shortcut"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 1 ]] || fail "expected pg wrapper selection from 'pg-shortcut'"
+
+  parse_service_selection "1"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 0 ]] || fail "did not expect pg wrapper selection from '1'"
+
   selection_output="$(printf '\n1 3\n' | collect_service_selection 2>&1 || true)"
   assert_output_contains "$selection_output" "Select one or more components to install/deploy"
   assert_output_contains "$selection_output" "space-separated or comma-separated"
+  assert_output_contains "$selection_output" "6) Install pg shortcut"
 
   temp_file="$(mktemp)"
   if printf 'r\n' | confirm_overwrite "$temp_file"; then
@@ -249,7 +285,7 @@ run_smoke_tests() {
 
   docker() {
     printf '%s\n' "$*" >>"$docker_log"
-    if [[ "$*" == "network inspect app-net" ]]; then
+    if [[ "$*" == "network inspect my_network" ]]; then
       return 1
     fi
   }
@@ -275,13 +311,13 @@ run_smoke_tests() {
   assert_contains "${temp_root}/mysql/init/01-app-user.sql" "GRANT ALL PRIVILEGES ON \`appdb\`.* TO 'app'@'%'"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "${temp_root}/mysql/init/01-app-user.sql:/docker-entrypoint-initdb.d/01-app-user.sql:ro"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "\"3306:3306\""
-  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "- mysql"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "image: rabbitmq:management"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "\"15674:15674\""
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "${RABBITMQ_CONFIG_FILE}:/etc/rabbitmq/rabbitmq.conf:ro"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "${RABBITMQ_ENABLED_PLUGINS_FILE}:/etc/rabbitmq/enabled_plugins:ro"
-  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "- rabbitmq"
   assert_contains "${RABBITMQ_CONFIG_FILE}" "default_user = admin"
   assert_contains "${RABBITMQ_CONFIG_FILE}" "default_pass = admin123"
@@ -294,8 +330,8 @@ run_smoke_tests() {
   assert_contains "$docker_log" "compose -p mysql -f ${temp_root}/docker/docker-mysql.yml up -d"
   assert_contains "$docker_log" "compose -p rabbitmq -f ${temp_root}/docker/docker-rabbitmq.yml up -d"
   assert_contains "$docker_log" "compose -p mysql -f ${temp_root}/docker/docker-mysql.yml down --remove-orphans"
-  assert_contains "$docker_log" "network inspect app-net"
-  assert_contains "$docker_log" "network create app-net"
+  assert_contains "$docker_log" "network inspect my_network"
+  assert_contains "$docker_log" "network create my_network"
   assert_contains "${temp_root}/docker/docker-redis.yml" "command: redis-server --appendonly yes"
   [[ -d "${CADDY_CONF_DIR}" ]] || fail "expected caddy conf directory"
   [[ -L "${ROOT_HOME}/conf" ]] || fail "expected root conf symlink"
@@ -304,7 +340,7 @@ run_smoke_tests() {
   if grep -Fq -- "--requirepass" "${temp_root}/docker/docker-redis.yml"; then
     fail "did not expect redis requirepass when password is blank"
   fi
-  assert_contains "${temp_root}/docker/docker-redis.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-redis.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-redis.yml" "- redis"
 
   echo "stale" >"${temp_root}/rabbitmq/data/old-state"
