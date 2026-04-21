@@ -189,8 +189,8 @@ run_generation_tests() {
 
   assert_file_exists "$PG_WRAPPER_BIN"
   [[ -x "$PG_WRAPPER_BIN" ]] || fail "expected pg wrapper to be executable"
-  assert_contains "$PG_WRAPPER_BIN" "docker exec -it postgres psql -U alice"
-  assert_contains "$PG_WRAPPER_BIN" "docker exec -i postgres psql -U alice"
+  assert_contains "$PG_WRAPPER_BIN" "docker exec -it postgres psql -U \"alice\""
+  assert_contains "$PG_WRAPPER_BIN" "docker exec -i postgres psql -U \"alice\""
   assert_contains "$PG_WRAPPER_BIN" "container 'postgres' is not running"
 }
 

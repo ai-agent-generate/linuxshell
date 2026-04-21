@@ -506,9 +506,9 @@ if ! docker inspect -f '{{.State.Running}}' postgres >/dev/null 2>&1; then
 fi
 
 if [ -t 0 ]; then
-  exec docker exec -it postgres psql -U ${user} "\$@"
+  exec docker exec -it postgres psql -U "${user}" "\$@"
 else
-  exec docker exec -i postgres psql -U ${user} "\$@"
+  exec docker exec -i postgres psql -U "${user}" "\$@"
 fi
 EOF
   chmod +x "$PG_WRAPPER_BIN"
