@@ -821,6 +821,9 @@ show_summary() {
   if (( SELECT_REDIS )); then
     echo "Redis: ${REDIS_COMPOSE_FILE} | data ${REDIS_DIR}/data | port ${REDIS_PORT} | network ${SHARED_NETWORK_NAME}"
   fi
+  if [[ -n "$INSTALLED_PG_WRAPPER_USER" ]]; then
+    echo "pg shortcut: ${PG_WRAPPER_BIN} (user: ${INSTALLED_PG_WRAPPER_USER})"
+  fi
 }
 
 main() {

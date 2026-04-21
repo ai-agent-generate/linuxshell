@@ -192,6 +192,11 @@ run_generation_tests() {
   assert_contains "$PG_WRAPPER_BIN" "docker exec -it postgres psql -U \"alice\""
   assert_contains "$PG_WRAPPER_BIN" "docker exec -i postgres psql -U \"alice\""
   assert_contains "$PG_WRAPPER_BIN" "container 'postgres' is not running"
+
+  local summary_output
+  summary_output="$(show_summary 2>&1)"
+  [[ "$summary_output" == *"pg shortcut: ${PG_WRAPPER_BIN} (user: alice)"* ]] \
+    || fail "expected show_summary to include pg shortcut line"
 }
 
 run_helper_tests() {
