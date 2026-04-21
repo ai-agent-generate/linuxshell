@@ -133,6 +133,11 @@ run_skeleton_tests() {
   assert_function_exists "detect_os"
   assert_function_exists "ensure_directories"
   assert_function_exists "main"
+
+  local standalone="${ROOT_DIR}/install-pg-wrapper.sh"
+  assert_file_exists "$standalone"
+  [[ -x "$standalone" ]] || fail "expected install-pg-wrapper.sh to be executable"
+  bash -n "$standalone" || fail "install-pg-wrapper.sh has syntax errors"
 }
 
 run_generation_tests() {
