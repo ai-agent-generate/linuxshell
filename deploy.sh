@@ -21,8 +21,9 @@ REDIS_COMPOSE_FILE="${REDIS_COMPOSE_FILE:-${DOCKER_DIR}/docker-redis.yml}"
 MYSQL_CONFIG_FILE="${MYSQL_CONFIG_FILE:-${MYSQL_DIR}/conf/my.cnf}"
 MYSQL_INIT_DIR="${MYSQL_INIT_DIR:-${MYSQL_DIR}/init}"
 MYSQL_INIT_FILE="${MYSQL_INIT_FILE:-${MYSQL_INIT_DIR}/01-app-user.sql}"
-RABBITMQ_BOOTSTRAP_DIR="${RABBITMQ_BOOTSTRAP_DIR:-${RABBITMQ_DIR}/bootstrap}"
-RABBITMQ_BOOTSTRAP_FILE="${RABBITMQ_BOOTSTRAP_FILE:-${RABBITMQ_BOOTSTRAP_DIR}/bootstrap.sh}"
+RABBITMQ_CONF_DIR="${RABBITMQ_CONF_DIR:-${RABBITMQ_DIR}/conf}"
+RABBITMQ_CONFIG_FILE="${RABBITMQ_CONFIG_FILE:-${RABBITMQ_CONF_DIR}/rabbitmq.conf}"
+RABBITMQ_ENABLED_PLUGINS_FILE="${RABBITMQ_ENABLED_PLUGINS_FILE:-${RABBITMQ_CONF_DIR}/enabled_plugins}"
 
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18.3}"
 MYSQL_IMAGE="${MYSQL_IMAGE:-mysql:8.4.8}"
@@ -42,6 +43,7 @@ DEFAULT_MYSQL_ROOT_PASSWORD="${DEFAULT_MYSQL_ROOT_PASSWORD:-root123}"
 
 DEFAULT_RABBITMQ_PORT="${DEFAULT_RABBITMQ_PORT:-5672}"
 DEFAULT_RABBITMQ_MANAGEMENT_PORT="${DEFAULT_RABBITMQ_MANAGEMENT_PORT:-15672}"
+DEFAULT_RABBITMQ_WEB_STOMP_PORT="${DEFAULT_RABBITMQ_WEB_STOMP_PORT:-15674}"
 DEFAULT_RABBITMQ_USER="${DEFAULT_RABBITMQ_USER:-admin}"
 DEFAULT_RABBITMQ_PASSWORD="${DEFAULT_RABBITMQ_PASSWORD:-admin123}"
 
@@ -67,6 +69,7 @@ MYSQL_ROOT_PASSWORD="$DEFAULT_MYSQL_ROOT_PASSWORD"
 
 RABBITMQ_PORT="$DEFAULT_RABBITMQ_PORT"
 RABBITMQ_MANAGEMENT_PORT="$DEFAULT_RABBITMQ_MANAGEMENT_PORT"
+RABBITMQ_WEB_STOMP_PORT="$DEFAULT_RABBITMQ_WEB_STOMP_PORT"
 RABBITMQ_USER="$DEFAULT_RABBITMQ_USER"
 RABBITMQ_PASSWORD="$DEFAULT_RABBITMQ_PASSWORD"
 
@@ -130,7 +133,7 @@ ensure_directories() {
   mkdir -p "$DOCKER_DIR"
   mkdir -p "${POSTGRES_DIR}/data"
   mkdir -p "${MYSQL_DIR}/data" "${MYSQL_DIR}/conf" "${MYSQL_DIR}/env" "${MYSQL_INIT_DIR}"
-  mkdir -p "${RABBITMQ_DIR}/data" "${RABBITMQ_BOOTSTRAP_DIR}"
+  mkdir -p "${RABBITMQ_DIR}/data" "${RABBITMQ_CONF_DIR}"
   mkdir -p "${REDIS_DIR}/data"
 }
 
@@ -403,10 +406,12 @@ EOF
 write_rabbitmq_compose() {
   local amqp_port="$1"
   local management_port="$2"
-  local username="$3"
-  local password="$4"
+  local web_stomp_port="$3"
+  local username="$4"
+  local password="$5"
 
-  write_rabbitmq_bootstrap_script
+  write_rabbitmq_config "$username" "$password"
+  write_rabbitmq_enabled_plugins
 
   cat >"$RABBITMQ_COMPOSE_FILE" <<EOF
 name: ${RABBITMQ_PROJECT_NAME}
@@ -416,16 +421,14 @@ services:
     container_name: rabbitmq
     image: ${RABBITMQ_IMAGE}
     restart: unless-stopped
-    command: /bin/bash /opt/rabbitmq/bootstrap.sh
-    environment:
-      RABBITMQ_APP_USER: ${username}
-      RABBITMQ_APP_PASS: ${password}
     ports:
       - "${amqp_port}:5672"
       - "${management_port}:15672"
+      - "${web_stomp_port}:15674"
     volumes:
       - ${RABBITMQ_DIR}/data:/var/lib/rabbitmq
-      - ${RABBITMQ_BOOTSTRAP_FILE}:/opt/rabbitmq/bootstrap.sh:ro
+      - ${RABBITMQ_CONFIG_FILE}:/etc/rabbitmq/rabbitmq.conf:ro
+      - ${RABBITMQ_ENABLED_PLUGINS_FILE}:/etc/rabbitmq/enabled_plugins:ro
     networks:
       default:
         aliases:
@@ -438,33 +441,20 @@ networks:
 EOF
 }
 
-write_rabbitmq_bootstrap_script() {
-  cat >"$RABBITMQ_BOOTSTRAP_FILE" <<'EOF'
-#!/usr/bin/env bash
+write_rabbitmq_config() {
+  local username="$1"
+  local password="$2"
 
-set -euo pipefail
-
-rabbitmq-plugins enable --offline rabbitmq_management
-rabbitmq-plugins enable --offline rabbitmq_prometheus
-rabbitmq-plugins enable --offline rabbitmq_top
-rabbitmq-plugins enable --offline rabbitmq_tracing
-rabbitmq-plugins enable --offline rabbitmq_stomp
-rabbitmq-plugins enable --offline rabbitmq_web_stomp
-
-rabbitmq-server -detached
-rabbitmqctl await_startup
-
-if [[ "${RABBITMQ_APP_USER:-guest}" != "guest" || "${RABBITMQ_APP_PASS:-guest}" != "guest" ]]; then
-  rabbitmqctl add_user "$RABBITMQ_APP_USER" "$RABBITMQ_APP_PASS" 2>/dev/null || rabbitmqctl change_password "$RABBITMQ_APP_USER" "$RABBITMQ_APP_PASS"
-  rabbitmqctl set_user_tags "$RABBITMQ_APP_USER" administrator
-  rabbitmqctl set_permissions -p / "$RABBITMQ_APP_USER" ".*" ".*" ".*"
-fi
-
-rabbitmqctl stop
-exec rabbitmq-server
+  cat >"$RABBITMQ_CONFIG_FILE" <<EOF
+default_user = ${username}
+default_pass = ${password}
 EOF
+}
 
-  chmod +x "$RABBITMQ_BOOTSTRAP_FILE"
+write_rabbitmq_enabled_plugins() {
+  cat >"$RABBITMQ_ENABLED_PLUGINS_FILE" <<'EOF'
+[rabbitmq_management,rabbitmq_prometheus,rabbitmq_top,rabbitmq_tracing,rabbitmq_stomp,rabbitmq_web_stomp].
+EOF
 }
 
 write_redis_compose() {
@@ -519,6 +509,7 @@ configure_mysql() {
 configure_rabbitmq() {
   RABBITMQ_PORT="$(prompt_with_default "RabbitMQ AMQP port" "$DEFAULT_RABBITMQ_PORT")"
   RABBITMQ_MANAGEMENT_PORT="$(prompt_with_default "RabbitMQ management port" "$DEFAULT_RABBITMQ_MANAGEMENT_PORT")"
+  RABBITMQ_WEB_STOMP_PORT="$(prompt_with_default "RabbitMQ Web STOMP port" "$DEFAULT_RABBITMQ_WEB_STOMP_PORT")"
   RABBITMQ_USER="$(prompt_with_default "RabbitMQ username" "$DEFAULT_RABBITMQ_USER")"
   RABBITMQ_PASSWORD="$(prompt_with_default "RabbitMQ password" "$DEFAULT_RABBITMQ_PASSWORD")"
 }
@@ -677,29 +668,31 @@ prepare_rabbitmq() {
     return 0
   fi
   if [[ "$action_status" -eq 3 ]]; then
-    reinstall_rabbitmq "$RABBITMQ_PORT" "$RABBITMQ_MANAGEMENT_PORT" "$RABBITMQ_USER" "$RABBITMQ_PASSWORD"
+    reinstall_rabbitmq "$RABBITMQ_PORT" "$RABBITMQ_MANAGEMENT_PORT" "$RABBITMQ_WEB_STOMP_PORT" "$RABBITMQ_USER" "$RABBITMQ_PASSWORD"
     return 0
   fi
 
   assert_port_available "$RABBITMQ_PORT" "RabbitMQ"
   assert_port_available "$RABBITMQ_MANAGEMENT_PORT" "RabbitMQ management"
-  write_rabbitmq_compose "$RABBITMQ_PORT" "$RABBITMQ_MANAGEMENT_PORT" "$RABBITMQ_USER" "$RABBITMQ_PASSWORD"
+  assert_port_available "$RABBITMQ_WEB_STOMP_PORT" "RabbitMQ Web STOMP"
+  write_rabbitmq_compose "$RABBITMQ_PORT" "$RABBITMQ_MANAGEMENT_PORT" "$RABBITMQ_WEB_STOMP_PORT" "$RABBITMQ_USER" "$RABBITMQ_PASSWORD"
   start_compose_file "$RABBITMQ_COMPOSE_FILE" "$RABBITMQ_PROJECT_NAME"
 }
 
 reinstall_rabbitmq() {
   local amqp_port="$1"
   local management_port="$2"
-  local username="$3"
-  local password="$4"
+  local web_stomp_port="$3"
+  local username="$4"
+  local password="$5"
 
   if [[ -f "$RABBITMQ_COMPOSE_FILE" ]]; then
     stop_compose_file "$RABBITMQ_COMPOSE_FILE" "$RABBITMQ_PROJECT_NAME"
   fi
 
   rm -rf "${RABBITMQ_DIR}/data"
-  mkdir -p "${RABBITMQ_DIR}/data" "${RABBITMQ_BOOTSTRAP_DIR}"
-  write_rabbitmq_compose "$amqp_port" "$management_port" "$username" "$password"
+  mkdir -p "${RABBITMQ_DIR}/data" "${RABBITMQ_CONF_DIR}"
+  write_rabbitmq_compose "$amqp_port" "$management_port" "$web_stomp_port" "$username" "$password"
   start_compose_file "$RABBITMQ_COMPOSE_FILE" "$RABBITMQ_PROJECT_NAME"
 }
 
@@ -734,7 +727,7 @@ show_summary() {
     echo "MySQL: ${MYSQL_COMPOSE_FILE} | data ${MYSQL_DIR}/data | config ${MYSQL_CONFIG_FILE} | port ${MYSQL_PORT} | user ${MYSQL_USER} | network ${SHARED_NETWORK_NAME}"
   fi
   if (( SELECT_RABBITMQ )); then
-    echo "RabbitMQ: ${RABBITMQ_COMPOSE_FILE} | data ${RABBITMQ_DIR}/data | amqp ${RABBITMQ_PORT} | ui ${RABBITMQ_MANAGEMENT_PORT} | network ${SHARED_NETWORK_NAME}"
+    echo "RabbitMQ: ${RABBITMQ_COMPOSE_FILE} | data ${RABBITMQ_DIR}/data | amqp ${RABBITMQ_PORT} | ui ${RABBITMQ_MANAGEMENT_PORT} | web-stomp ${RABBITMQ_WEB_STOMP_PORT} | network ${SHARED_NETWORK_NAME}"
   fi
   if (( SELECT_REDIS )); then
     echo "Redis: ${REDIS_COMPOSE_FILE} | data ${REDIS_DIR}/data | port ${REDIS_PORT} | network ${SHARED_NETWORK_NAME}"
