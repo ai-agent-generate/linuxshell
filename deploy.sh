@@ -506,7 +506,7 @@ install_pg_wrapper() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! docker inspect -f '{{.State.Running}}' postgres >/dev/null 2>&1; then
+if [[ "\$(docker inspect -f '{{.State.Running}}' postgres 2>/dev/null)" != "true" ]]; then
   echo "PostgreSQL container 'postgres' is not running." >&2
   exit 1
 fi

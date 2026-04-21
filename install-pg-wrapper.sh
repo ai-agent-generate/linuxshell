@@ -42,7 +42,7 @@ main() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! docker inspect -f '{{.State.Running}}' "${container}" >/dev/null 2>&1; then
+if [[ "\$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null)" != "true" ]]; then
   echo "PostgreSQL container '${container}' is not running." >&2
   exit 1
 fi
