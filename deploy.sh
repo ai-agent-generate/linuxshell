@@ -81,6 +81,8 @@ MYSQL_PROJECT_NAME="${MYSQL_PROJECT_NAME:-mysql}"
 RABBITMQ_PROJECT_NAME="${RABBITMQ_PROJECT_NAME:-rabbitmq}"
 REDIS_PROJECT_NAME="${REDIS_PROJECT_NAME:-redis}"
 SHARED_NETWORK_NAME="${SHARED_NETWORK_NAME:-my_network}"
+PG_WRAPPER_BIN="${PG_WRAPPER_BIN:-/usr/local/bin/pg}"
+INSTALLED_PG_WRAPPER_USER=""
 
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -489,6 +491,29 @@ networks:
     external: true
     name: ${SHARED_NETWORK_NAME}
 EOF
+}
+
+install_pg_wrapper() {
+  local user="$1"
+
+  cat >"$PG_WRAPPER_BIN" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! docker inspect -f '{{.State.Running}}' postgres >/dev/null 2>&1; then
+  echo "PostgreSQL container 'postgres' is not running." >&2
+  exit 1
+fi
+
+if [ -t 0 ]; then
+  exec docker exec -it postgres psql -U ${user} "\$@"
+else
+  exec docker exec -i postgres psql -U ${user} "\$@"
+fi
+EOF
+  chmod +x "$PG_WRAPPER_BIN"
+  INSTALLED_PG_WRAPPER_USER="$user"
+  echo "Installed pg shortcut at ${PG_WRAPPER_BIN} (user: ${user})"
 }
 
 get_postgres_major_version() {

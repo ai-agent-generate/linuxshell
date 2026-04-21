@@ -71,7 +71,8 @@ load_script() {
     POSTGRES_PORT POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD \
     MYSQL_PORT MYSQL_DB MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD \
     RABBITMQ_PORT RABBITMQ_MANAGEMENT_PORT RABBITMQ_WEB_STOMP_PORT RABBITMQ_USER RABBITMQ_PASSWORD \
-    REDIS_PORT REDIS_PASSWORD 2>/dev/null || true
+    REDIS_PORT REDIS_PASSWORD \
+    SELECT_PG_WRAPPER INSTALLED_PG_WRAPPER_USER 2>/dev/null || true
 
   if [[ "$preserved_data_root" == "__UNSET__" ]]; then
     unset DATA_ROOT 2>/dev/null || true
@@ -143,6 +144,8 @@ run_generation_tests() {
   export RABBITMQ_CONF_DIR="${temp_root}/rabbitmq/conf"
   export RABBITMQ_CONFIG_FILE="${RABBITMQ_CONF_DIR}/rabbitmq.conf"
   export RABBITMQ_ENABLED_PLUGINS_FILE="${RABBITMQ_CONF_DIR}/enabled_plugins"
+  export PG_WRAPPER_BIN="${temp_root}/usr/local/bin/pg"
+  mkdir -p "$(dirname "$PG_WRAPPER_BIN")"
 
   load_script
 
@@ -180,6 +183,15 @@ run_generation_tests() {
   assert_contains "${temp_root}/docker/docker-redis.yml" "--requirepass redis123"
   assert_contains "${temp_root}/docker/docker-redis.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-redis.yml" "- redis"
+
+  assert_function_exists "install_pg_wrapper"
+  install_pg_wrapper "alice"
+
+  assert_file_exists "$PG_WRAPPER_BIN"
+  [[ -x "$PG_WRAPPER_BIN" ]] || fail "expected pg wrapper to be executable"
+  assert_contains "$PG_WRAPPER_BIN" "docker exec -it postgres psql -U alice"
+  assert_contains "$PG_WRAPPER_BIN" "docker exec -i postgres psql -U alice"
+  assert_contains "$PG_WRAPPER_BIN" "container 'postgres' is not running"
 }
 
 run_helper_tests() {
