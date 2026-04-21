@@ -131,7 +131,7 @@ ensure_data_root_writable() {
 
 ensure_directories() {
   mkdir -p "$DOCKER_DIR"
-  mkdir -p "${POSTGRES_DIR}/data"
+  mkdir -p "${POSTGRES_DIR}"
   mkdir -p "${MYSQL_DIR}/data" "${MYSQL_DIR}/conf" "${MYSQL_DIR}/env" "${MYSQL_INIT_DIR}"
   mkdir -p "${RABBITMQ_DIR}/data" "${RABBITMQ_CONF_DIR}"
   mkdir -p "${REDIS_DIR}/data"
@@ -328,7 +328,7 @@ services:
     ports:
       - "${port}:5432"
     volumes:
-      - ${POSTGRES_DIR}/data:/var/lib/postgresql/data
+      - ${POSTGRES_DIR}:/var/lib/postgresql
     networks:
       default:
         aliases:
@@ -491,6 +491,11 @@ networks:
 EOF
 }
 
+get_postgres_major_version() {
+  local tag="${POSTGRES_IMAGE##*:}"
+  printf "%s" "${tag%%.*}"
+}
+
 configure_postgres() {
   POSTGRES_PORT="$(prompt_with_default "PostgreSQL host port" "$DEFAULT_POSTGRES_PORT")"
   POSTGRES_DB="$(prompt_with_default "PostgreSQL database name" "$DEFAULT_POSTGRES_DB")"
@@ -594,6 +599,55 @@ stop_compose_file() {
   docker compose -p "$project_name" -f "$compose_file" down --remove-orphans
 }
 
+reinstall_postgres() {
+  local port="$1"
+  local database="$2"
+  local username="$3"
+  local password="$4"
+  local action
+  local pg_major
+
+  echo "PostgreSQL reinstall options:"
+  echo "  [c]lean   - Delete all existing data and start fresh"
+  echo "  [m]igrate - Move existing data to PG 18+ directory structure (preserves data)"
+
+  while true; do
+    printf "Choose: [c]lean or [m]igrate: "
+    IFS= read -r action
+    case "$(to_lower "$action")" in
+      c|clean)
+        if [[ -f "$POSTGRES_COMPOSE_FILE" ]]; then
+          stop_compose_file "$POSTGRES_COMPOSE_FILE" "$POSTGRES_PROJECT_NAME"
+        fi
+        rm -rf "${POSTGRES_DIR}"
+        mkdir -p "${POSTGRES_DIR}"
+        write_postgres_compose "$port" "$database" "$username" "$password"
+        start_compose_file "$POSTGRES_COMPOSE_FILE" "$POSTGRES_PROJECT_NAME"
+        return 0
+        ;;
+      m|migrate)
+        if [[ ! -d "${POSTGRES_DIR}/data" ]]; then
+          echo "No data directory found at ${POSTGRES_DIR}/data, nothing to migrate." >&2
+          return 1
+        fi
+        pg_major="$(get_postgres_major_version)"
+        if [[ -f "$POSTGRES_COMPOSE_FILE" ]]; then
+          stop_compose_file "$POSTGRES_COMPOSE_FILE" "$POSTGRES_PROJECT_NAME"
+        fi
+        mkdir -p "${POSTGRES_DIR}/${pg_major}"
+        mv "${POSTGRES_DIR}/data" "${POSTGRES_DIR}/${pg_major}/main"
+        echo "Migrated: ${POSTGRES_DIR}/data -> ${POSTGRES_DIR}/${pg_major}/main"
+        write_postgres_compose "$port" "$database" "$username" "$password"
+        start_compose_file "$POSTGRES_COMPOSE_FILE" "$POSTGRES_PROJECT_NAME"
+        return 0
+        ;;
+      *)
+        echo "Please enter c or m." >&2
+        ;;
+    esac
+  done
+}
+
 prepare_postgres() {
   local action_status=0
 
@@ -604,6 +658,10 @@ prepare_postgres() {
   fi
   if [[ "$action_status" -eq 2 ]]; then
     start_compose_file "$POSTGRES_COMPOSE_FILE" "$POSTGRES_PROJECT_NAME"
+    return 0
+  fi
+  if [[ "$action_status" -eq 3 ]]; then
+    reinstall_postgres "$POSTGRES_PORT" "$POSTGRES_DB" "$POSTGRES_USER" "$POSTGRES_PASSWORD"
     return 0
   fi
 
@@ -721,7 +779,7 @@ show_summary() {
     echo "Caddy installed via apt."
   fi
   if (( SELECT_POSTGRES )); then
-    echo "PostgreSQL: ${POSTGRES_COMPOSE_FILE} | data ${POSTGRES_DIR}/data | port ${POSTGRES_PORT} | user ${POSTGRES_USER} | network ${SHARED_NETWORK_NAME}"
+    echo "PostgreSQL: ${POSTGRES_COMPOSE_FILE} | data ${POSTGRES_DIR} | port ${POSTGRES_PORT} | user ${POSTGRES_USER} | network ${SHARED_NETWORK_NAME}"
   fi
   if (( SELECT_MYSQL )); then
     echo "MySQL: ${MYSQL_COMPOSE_FILE} | data ${MYSQL_DIR}/data | config ${MYSQL_CONFIG_FILE} | port ${MYSQL_PORT} | user ${MYSQL_USER} | network ${SHARED_NETWORK_NAME}"
