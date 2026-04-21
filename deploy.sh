@@ -55,6 +55,7 @@ SELECT_POSTGRES=0
 SELECT_MYSQL=0
 SELECT_RABBITMQ=0
 SELECT_REDIS=0
+SELECT_PG_WRAPPER=0
 
 POSTGRES_PORT="$DEFAULT_POSTGRES_PORT"
 POSTGRES_DB="$DEFAULT_POSTGRES_DB"
@@ -199,6 +200,7 @@ parse_service_selection() {
   SELECT_MYSQL=0
   SELECT_RABBITMQ=0
   SELECT_REDIS=0
+  SELECT_PG_WRAPPER=0
 
   for token in $selection; do
     normalized="$(to_lower "$token")"
@@ -217,6 +219,9 @@ parse_service_selection() {
         ;;
       5|redis)
         SELECT_REDIS=1
+        ;;
+      6|pg|pg-shortcut)
+        SELECT_PG_WRAPPER=1
         ;;
       *)
         echo "Ignoring unknown selection: $token" >&2
@@ -242,7 +247,7 @@ EOF
     IFS= read -r selection
     parse_service_selection "$selection"
 
-    if (( SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS )); then
+    if (( SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS || SELECT_PG_WRAPPER )); then
       return 0
     fi
 

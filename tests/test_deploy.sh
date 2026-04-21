@@ -223,6 +223,19 @@ run_helper_tests() {
   [[ "${SELECT_POSTGRES:-0}" -eq 1 ]] || fail "expected postgres selection from comma-separated input"
   [[ "${SELECT_REDIS:-0}" -eq 1 ]] || fail "expected redis selection from comma-separated input"
 
+  parse_service_selection "6"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 1 ]] || fail "expected pg wrapper selection from '6'"
+  [[ "${SELECT_CADDY:-0}" -eq 0 ]] || fail "did not expect caddy selection from '6'"
+
+  parse_service_selection "pg"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 1 ]] || fail "expected pg wrapper selection from 'pg'"
+
+  parse_service_selection "pg-shortcut"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 1 ]] || fail "expected pg wrapper selection from 'pg-shortcut'"
+
+  parse_service_selection "1"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 0 ]] || fail "did not expect pg wrapper selection from '1'"
+
   selection_output="$(printf '\n1 3\n' | collect_service_selection 2>&1 || true)"
   assert_output_contains "$selection_output" "Select one or more components to install/deploy"
   assert_output_contains "$selection_output" "space-separated or comma-separated"
