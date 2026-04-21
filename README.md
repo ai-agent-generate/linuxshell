@@ -26,6 +26,30 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 
 运行后按提示选择需要安装的组件（可多选，空格或逗号分隔）。
 
+## 快捷使用 psql
+
+部署 PostgreSQL 时会自动安装 `pg` 命令（`/usr/local/bin/pg`），等价于 `docker exec -it postgres psql -U <user>`：
+
+```bash
+pg                           # 交互 shell（默认连接用户同名库）
+pg appdb                     # 切换到 appdb
+pg -c "SELECT now()"         # 执行一条 SQL
+cat host.sql | pg appdb      # 从宿主 SQL 文件导入
+pg -U readonly_user appdb    # 临时切换身份（psql 对 -U last-wins）
+```
+
+> 注意：psql 在容器内执行，`pg -f /path.sql` 中的路径是**容器内路径**。跑宿主文件用管道或先 `docker cp`。
+
+**已有 PostgreSQL 运行时，单独安装 `pg` 命令**：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/install-pg-wrapper.sh)
+```
+
+或重新运行 `deploy.sh` 选择菜单项 `6`。
+
+---
+
 ## 数据目录
 
 所有数据默认存放在 `/data`：
