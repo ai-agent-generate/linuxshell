@@ -841,6 +841,7 @@ main() {
   if (( SELECT_POSTGRES )); then
     configure_postgres
     prepare_postgres
+    install_pg_wrapper "$POSTGRES_USER"
   fi
 
   if (( SELECT_MYSQL )); then
@@ -859,6 +860,12 @@ main() {
   if (( SELECT_REDIS )); then
     configure_redis
     prepare_redis
+  fi
+
+  if (( SELECT_PG_WRAPPER && ! SELECT_POSTGRES )); then
+    local wrapper_user
+    wrapper_user="$(prompt_with_default "PostgreSQL username to bake into 'pg'" "postgres")"
+    install_pg_wrapper "$wrapper_user"
   fi
 
   show_summary
