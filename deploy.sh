@@ -240,6 +240,7 @@ Select one or more components to install/deploy (space-separated or comma-separa
   3) MySQL
   4) RabbitMQ
   5) Redis
+  6) Install pg shortcut (PostgreSQL already running)
 EOF
 
   while true; do

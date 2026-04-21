@@ -239,6 +239,7 @@ run_helper_tests() {
   selection_output="$(printf '\n1 3\n' | collect_service_selection 2>&1 || true)"
   assert_output_contains "$selection_output" "Select one or more components to install/deploy"
   assert_output_contains "$selection_output" "space-separated or comma-separated"
+  assert_output_contains "$selection_output" "6) Install pg shortcut"
 
   temp_file="$(mktemp)"
   if printf 'r\n' | confirm_overwrite "$temp_file"; then
