@@ -54,7 +54,7 @@ DATA_ROOT=/opt/data bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent
 
 ## 共享网络
 
-所有容器加入同一个 Docker 网络 `app-net`，服务间可通过容器名直接互访（如 `postgres:5432`）。
+所有容器加入同一个 Docker 网络 `my_network`，服务间可通过容器名直接互访（如 `postgres:5432`）。
 
 ## 环境变量参考
 
@@ -65,4 +65,4 @@ DATA_ROOT=/opt/data bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent
 | `MYSQL_IMAGE` | `mysql:8.4.8` | MySQL 镜像 |
 | `RABBITMQ_IMAGE` | `rabbitmq:management` | RabbitMQ 镜像 |
 | `REDIS_IMAGE` | `redis:8.6.1` | Redis 镜像 |
-| `SHARED_NETWORK_NAME` | `app-net` | Docker 共享网络名 |
+| `SHARED_NETWORK_NAME` | `my_network` | Docker 共享网络名 |
