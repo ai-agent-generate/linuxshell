@@ -169,16 +169,16 @@ run_generation_tests() {
   assert_contains "${temp_root}/mysql/conf/my.cnf" "bind-address=0.0.0.0"
   assert_contains "${temp_root}/mysql/conf/my.cnf" "binlog_expire_logs_seconds=86400"
   assert_not_contains "${temp_root}/mysql/conf/my.cnf" "default-authentication-plugin=mysql_native_password"
-  assert_contains "${temp_root}/docker/docker-postgres.yml" "${temp_root}/postgres/data"
-  assert_contains "${temp_root}/docker/docker-postgres.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-postgres.yml" "${temp_root}/postgres:/var/lib/postgresql"
+  assert_contains "${temp_root}/docker/docker-postgres.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-postgres.yml" "- postgres"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "${temp_root}/mysql/conf/my.cnf:/etc/mysql/conf.d/99-custom.cnf:ro"
-  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "- mysql"
-  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "- rabbitmq"
   assert_contains "${temp_root}/docker/docker-redis.yml" "--requirepass redis123"
-  assert_contains "${temp_root}/docker/docker-redis.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-redis.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-redis.yml" "- redis"
 }
 
@@ -249,7 +249,7 @@ run_smoke_tests() {
 
   docker() {
     printf '%s\n' "$*" >>"$docker_log"
-    if [[ "$*" == "network inspect app-net" ]]; then
+    if [[ "$*" == "network inspect my_network" ]]; then
       return 1
     fi
   }
@@ -275,13 +275,13 @@ run_smoke_tests() {
   assert_contains "${temp_root}/mysql/init/01-app-user.sql" "GRANT ALL PRIVILEGES ON \`appdb\`.* TO 'app'@'%'"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "${temp_root}/mysql/init/01-app-user.sql:/docker-entrypoint-initdb.d/01-app-user.sql:ro"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "\"3306:3306\""
-  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-mysql.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-mysql.yml" "- mysql"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "image: rabbitmq:management"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "\"15674:15674\""
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "${RABBITMQ_CONFIG_FILE}:/etc/rabbitmq/rabbitmq.conf:ro"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "${RABBITMQ_ENABLED_PLUGINS_FILE}:/etc/rabbitmq/enabled_plugins:ro"
-  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-rabbitmq.yml" "- rabbitmq"
   assert_contains "${RABBITMQ_CONFIG_FILE}" "default_user = admin"
   assert_contains "${RABBITMQ_CONFIG_FILE}" "default_pass = admin123"
@@ -294,8 +294,8 @@ run_smoke_tests() {
   assert_contains "$docker_log" "compose -p mysql -f ${temp_root}/docker/docker-mysql.yml up -d"
   assert_contains "$docker_log" "compose -p rabbitmq -f ${temp_root}/docker/docker-rabbitmq.yml up -d"
   assert_contains "$docker_log" "compose -p mysql -f ${temp_root}/docker/docker-mysql.yml down --remove-orphans"
-  assert_contains "$docker_log" "network inspect app-net"
-  assert_contains "$docker_log" "network create app-net"
+  assert_contains "$docker_log" "network inspect my_network"
+  assert_contains "$docker_log" "network create my_network"
   assert_contains "${temp_root}/docker/docker-redis.yml" "command: redis-server --appendonly yes"
   [[ -d "${CADDY_CONF_DIR}" ]] || fail "expected caddy conf directory"
   [[ -L "${ROOT_HOME}/conf" ]] || fail "expected root conf symlink"
@@ -304,7 +304,7 @@ run_smoke_tests() {
   if grep -Fq -- "--requirepass" "${temp_root}/docker/docker-redis.yml"; then
     fail "did not expect redis requirepass when password is blank"
   fi
-  assert_contains "${temp_root}/docker/docker-redis.yml" "name: app-net"
+  assert_contains "${temp_root}/docker/docker-redis.yml" "name: my_network"
   assert_contains "${temp_root}/docker/docker-redis.yml" "- redis"
 
   echo "stale" >"${temp_root}/rabbitmq/data/old-state"
