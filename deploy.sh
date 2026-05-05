@@ -43,7 +43,9 @@ load_linuxshell_modules \
   lib/compose.sh \
   lib/pg-wrapper.sh \
   lib/services/postgres.sh \
-  lib/services/mysql.sh
+  lib/services/mysql.sh \
+  lib/services/rabbitmq.sh \
+  lib/services/redis.sh
 
 DATA_ROOT="${DATA_ROOT:-/data}"
 DOCKER_DIR="${DOCKER_DIR:-${DATA_ROOT}/docker}"
@@ -354,107 +356,6 @@ confirm_overwrite() {
   done
 }
 
-write_rabbitmq_compose() {
-  local amqp_port="$1"
-  local management_port="$2"
-  local web_stomp_port="$3"
-  local username="$4"
-  local password="$5"
-
-  write_rabbitmq_config "$username" "$password"
-  write_rabbitmq_enabled_plugins
-
-  cat >"$RABBITMQ_COMPOSE_FILE" <<EOF
-name: ${RABBITMQ_PROJECT_NAME}
-
-services:
-  rabbitmq:
-    container_name: rabbitmq
-    image: ${RABBITMQ_IMAGE}
-    restart: unless-stopped
-    ports:
-      - "${amqp_port}:5672"
-      - "${management_port}:15672"
-      - "${web_stomp_port}:15674"
-    volumes:
-      - ${RABBITMQ_DIR}/data:/var/lib/rabbitmq
-      - ${RABBITMQ_CONFIG_FILE}:/etc/rabbitmq/rabbitmq.conf:ro
-      - ${RABBITMQ_ENABLED_PLUGINS_FILE}:/etc/rabbitmq/enabled_plugins:ro
-    networks:
-      default:
-        aliases:
-          - rabbitmq
-
-networks:
-  default:
-    external: true
-    name: ${SHARED_NETWORK_NAME}
-EOF
-}
-
-write_rabbitmq_config() {
-  local username="$1"
-  local password="$2"
-
-  cat >"$RABBITMQ_CONFIG_FILE" <<EOF
-default_user = ${username}
-default_pass = ${password}
-EOF
-}
-
-write_rabbitmq_enabled_plugins() {
-  cat >"$RABBITMQ_ENABLED_PLUGINS_FILE" <<'EOF'
-[rabbitmq_management,rabbitmq_prometheus,rabbitmq_top,rabbitmq_tracing,rabbitmq_stomp,rabbitmq_web_stomp].
-EOF
-}
-
-write_redis_compose() {
-  local port="$1"
-  local password="${2:-}"
-  local command="redis-server --appendonly yes"
-
-  if [[ -n "$password" ]]; then
-    command="${command} --requirepass ${password}"
-  fi
-
-  cat >"$REDIS_COMPOSE_FILE" <<EOF
-name: ${REDIS_PROJECT_NAME}
-
-services:
-  redis:
-    container_name: redis
-    image: ${REDIS_IMAGE}
-    restart: unless-stopped
-    command: ${command}
-    ports:
-      - "${port}:6379"
-    volumes:
-      - ${REDIS_DIR}/data:/data
-    networks:
-      default:
-        aliases:
-          - redis
-
-networks:
-  default:
-    external: true
-    name: ${SHARED_NETWORK_NAME}
-EOF
-}
-
-configure_rabbitmq() {
-  RABBITMQ_PORT="$(prompt_with_default "RabbitMQ AMQP port" "$DEFAULT_RABBITMQ_PORT")"
-  RABBITMQ_MANAGEMENT_PORT="$(prompt_with_default "RabbitMQ management port" "$DEFAULT_RABBITMQ_MANAGEMENT_PORT")"
-  RABBITMQ_WEB_STOMP_PORT="$(prompt_with_default "RabbitMQ Web STOMP port" "$DEFAULT_RABBITMQ_WEB_STOMP_PORT")"
-  RABBITMQ_USER="$(prompt_with_default "RabbitMQ username" "$DEFAULT_RABBITMQ_USER")"
-  RABBITMQ_PASSWORD="$(prompt_with_default "RabbitMQ password" "$DEFAULT_RABBITMQ_PASSWORD")"
-}
-
-configure_redis() {
-  REDIS_PORT="$(prompt_with_default "Redis host port" "$DEFAULT_REDIS_PORT")"
-  REDIS_PASSWORD="$(prompt_with_default "Redis password (leave blank for no password)" "$DEFAULT_REDIS_PASSWORD")"
-}
-
 install_apt_dependencies() {
   apt-get update
   apt-get install -y ca-certificates curl gnupg lsb-release
@@ -482,65 +383,6 @@ EOF
   apt-get update
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   systemctl enable --now docker
-}
-
-prepare_rabbitmq() {
-  local action_status=0
-
-  confirm_overwrite "$RABBITMQ_COMPOSE_FILE" || action_status=$?
-  if [[ "$action_status" -eq 1 ]]; then
-    echo "Skipping RabbitMQ compose generation."
-    return 0
-  fi
-  if [[ "$action_status" -eq 2 ]]; then
-    start_compose_file "$RABBITMQ_COMPOSE_FILE" "$RABBITMQ_PROJECT_NAME"
-    return 0
-  fi
-  if [[ "$action_status" -eq 3 ]]; then
-    reinstall_rabbitmq "$RABBITMQ_PORT" "$RABBITMQ_MANAGEMENT_PORT" "$RABBITMQ_WEB_STOMP_PORT" "$RABBITMQ_USER" "$RABBITMQ_PASSWORD"
-    return 0
-  fi
-
-  assert_port_available "$RABBITMQ_PORT" "RabbitMQ"
-  assert_port_available "$RABBITMQ_MANAGEMENT_PORT" "RabbitMQ management"
-  assert_port_available "$RABBITMQ_WEB_STOMP_PORT" "RabbitMQ Web STOMP"
-  write_rabbitmq_compose "$RABBITMQ_PORT" "$RABBITMQ_MANAGEMENT_PORT" "$RABBITMQ_WEB_STOMP_PORT" "$RABBITMQ_USER" "$RABBITMQ_PASSWORD"
-  start_compose_file "$RABBITMQ_COMPOSE_FILE" "$RABBITMQ_PROJECT_NAME"
-}
-
-reinstall_rabbitmq() {
-  local amqp_port="$1"
-  local management_port="$2"
-  local web_stomp_port="$3"
-  local username="$4"
-  local password="$5"
-
-  if [[ -f "$RABBITMQ_COMPOSE_FILE" ]]; then
-    stop_compose_file "$RABBITMQ_COMPOSE_FILE" "$RABBITMQ_PROJECT_NAME"
-  fi
-
-  rm -rf "${RABBITMQ_DIR}/data"
-  mkdir -p "${RABBITMQ_DIR}/data" "${RABBITMQ_CONF_DIR}"
-  write_rabbitmq_compose "$amqp_port" "$management_port" "$web_stomp_port" "$username" "$password"
-  start_compose_file "$RABBITMQ_COMPOSE_FILE" "$RABBITMQ_PROJECT_NAME"
-}
-
-prepare_redis() {
-  local action_status=0
-
-  confirm_overwrite "$REDIS_COMPOSE_FILE" || action_status=$?
-  if [[ "$action_status" -eq 1 ]]; then
-    echo "Skipping Redis compose generation."
-    return 0
-  fi
-  if [[ "$action_status" -eq 2 ]]; then
-    start_compose_file "$REDIS_COMPOSE_FILE" "$REDIS_PROJECT_NAME"
-    return 0
-  fi
-
-  assert_port_available "$REDIS_PORT" "Redis"
-  write_redis_compose "$REDIS_PORT" "$REDIS_PASSWORD"
-  start_compose_file "$REDIS_COMPOSE_FILE" "$REDIS_PROJECT_NAME"
 }
 
 show_summary() {
