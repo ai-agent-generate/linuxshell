@@ -38,7 +38,10 @@ load_linuxshell_modules() {
 load_linuxshell_modules \
   lib/config.sh \
   lib/common.sh \
-  lib/docker.sh
+  lib/docker.sh \
+  lib/caddy.sh \
+  lib/compose.sh \
+  lib/pg-wrapper.sh
 
 DATA_ROOT="${DATA_ROOT:-/data}"
 DOCKER_DIR="${DOCKER_DIR:-${DATA_ROOT}/docker}"
@@ -177,12 +180,6 @@ ensure_directories() {
   mkdir -p "${MYSQL_DIR}/data" "${MYSQL_DIR}/conf" "${MYSQL_DIR}/env" "${MYSQL_INIT_DIR}"
   mkdir -p "${RABBITMQ_DIR}/data" "${RABBITMQ_CONF_DIR}"
   mkdir -p "${REDIS_DIR}/data"
-}
-
-configure_caddy_layout() {
-  mkdir -p "$CADDY_CONF_DIR"
-  printf "import %s/*\n" "$CADDY_CONF_DIR" >"$CADDY_MAIN_FILE"
-  ln -sfn "$CADDY_CONF_DIR" "$ROOT_HOME"
 }
 
 prompt_with_default() {
@@ -543,29 +540,6 @@ networks:
 EOF
 }
 
-install_pg_wrapper() {
-  local user="$1"
-
-  cat >"$PG_WRAPPER_BIN" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-if [[ "\$(docker inspect -f '{{.State.Running}}' postgres 2>/dev/null)" != "true" ]]; then
-  echo "PostgreSQL container 'postgres' is not running." >&2
-  exit 1
-fi
-
-if [ -t 0 ]; then
-  exec docker exec -it postgres psql -U "${user}" "\$@"
-else
-  exec docker exec -i postgres psql -U "${user}" "\$@"
-fi
-EOF
-  chmod +x "$PG_WRAPPER_BIN"
-  INSTALLED_PG_WRAPPER_USER="$user"
-  echo "Installed pg shortcut at ${PG_WRAPPER_BIN} (user: ${user})"
-}
-
 get_postgres_major_version() {
   local tag="${POSTGRES_IMAGE##*:}"
   printf "%s" "${tag%%.*}"
@@ -628,22 +602,6 @@ EOF
   systemctl enable --now docker
 }
 
-install_caddy() {
-  if command_exists caddy; then
-    print_step "Caddy already installed"
-  else
-    print_step "Installing Caddy"
-    install_apt_dependencies
-    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update
-    apt-get install -y caddy
-  fi
-
-  configure_caddy_layout
-}
-
 install_mysql_client() {
   if has_mysql_client; then
     print_step "MySQL client already installed"
@@ -653,25 +611,6 @@ install_mysql_client() {
   print_step "Installing MySQL client"
   apt-get update
   apt-get install -y default-mysql-client
-}
-
-ensure_shared_network() {
-  if ! docker network inspect "$SHARED_NETWORK_NAME" >/dev/null 2>&1; then
-    docker network create "$SHARED_NETWORK_NAME" >/dev/null
-  fi
-}
-
-start_compose_file() {
-  local compose_file="$1"
-  local project_name="$2"
-  ensure_shared_network
-  docker compose -p "$project_name" -f "$compose_file" up -d
-}
-
-stop_compose_file() {
-  local compose_file="$1"
-  local project_name="$2"
-  docker compose -p "$project_name" -f "$compose_file" down --remove-orphans
 }
 
 reinstall_postgres() {
