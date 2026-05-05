@@ -161,6 +161,11 @@ run_skeleton_tests() {
   bash -n "$docker_standalone" || fail "install-docker.sh has syntax errors"
   assert_contains "$docker_standalone" "lib/docker.sh"
   assert_not_contains "$docker_standalone" "docker-ce docker-ce-cli"
+
+  local module
+  while IFS= read -r module; do
+    bash -n "$module" || fail "module has syntax errors: $module"
+  done < <(find "${ROOT_DIR}/lib" -name '*.sh' -type f | sort)
 }
 
 run_generation_tests() {
@@ -434,6 +439,12 @@ run_docker_only_tests() {
   assert_not_contains "$action_log" "install_pg_wrapper"
 }
 
+run_loader_tests() {
+  load_script
+  assert_equals "local" "${LINUXSHELL_MODULE_SOURCE:-}"
+  assert_equals "$ROOT_DIR" "${LINUXSHELL_MODULE_ROOT:-}"
+}
+
 main() {
   local suite="${1:-all}"
 
@@ -453,12 +464,16 @@ main() {
     docker-only)
       run_docker_only_tests
       ;;
+    loader)
+      run_loader_tests
+      ;;
     all)
       run_skeleton_tests
       run_generation_tests
       run_helper_tests
       run_smoke_tests
       run_docker_only_tests
+      run_loader_tests
       ;;
     *)
       fail "unknown suite: $suite"
