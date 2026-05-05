@@ -72,7 +72,8 @@ load_script() {
     MYSQL_PORT MYSQL_DB MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD \
     RABBITMQ_PORT RABBITMQ_MANAGEMENT_PORT RABBITMQ_WEB_STOMP_PORT RABBITMQ_USER RABBITMQ_PASSWORD \
     REDIS_PORT REDIS_PASSWORD \
-    SELECT_PG_WRAPPER INSTALLED_PG_WRAPPER_USER 2>/dev/null || true
+    SELECT_DOCKER SELECT_PG_WRAPPER INSTALLED_PG_WRAPPER_USER \
+    LINUXSHELL_MODULE_ROOT LINUXSHELL_MODULE_SOURCE 2>/dev/null || true
 
   if [[ "$preserved_data_root" == "__UNSET__" ]]; then
     unset DATA_ROOT 2>/dev/null || true
@@ -129,15 +130,42 @@ load_script() {
 run_skeleton_tests() {
   assert_file_exists "$DEPLOY_SCRIPT"
   load_script
-  assert_function_exists "require_root"
-  assert_function_exists "detect_os"
-  assert_function_exists "ensure_directories"
-  assert_function_exists "main"
+
+  local expected_functions=(
+    require_root detect_os ensure_data_root_writable ensure_directories
+    configure_caddy_layout prompt_with_default prompt_yes_no
+    parse_service_selection collect_service_selection has_mysql_client
+    port_in_use assert_port_available confirm_overwrite
+    write_postgres_compose get_postgres_major_version configure_postgres reinstall_postgres prepare_postgres
+    write_mysql_config write_mysql_init_sql write_mysql_compose configure_mysql install_mysql_client reinstall_mysql prepare_mysql
+    write_rabbitmq_compose write_rabbitmq_config write_rabbitmq_enabled_plugins configure_rabbitmq reinstall_rabbitmq prepare_rabbitmq
+    write_redis_compose configure_redis prepare_redis
+    install_pg_wrapper install_apt_dependencies install_docker install_caddy
+    ensure_shared_network start_compose_file stop_compose_file
+    show_summary main
+  )
+
+  local fn
+  for fn in "${expected_functions[@]}"; do
+    assert_function_exists "$fn"
+  done
 
   local standalone="${ROOT_DIR}/install-pg-wrapper.sh"
   assert_file_exists "$standalone"
   [[ -x "$standalone" ]] || fail "expected install-pg-wrapper.sh to be executable"
   bash -n "$standalone" || fail "install-pg-wrapper.sh has syntax errors"
+
+  local docker_standalone="${ROOT_DIR}/install-docker.sh"
+  assert_file_exists "$docker_standalone"
+  [[ -x "$docker_standalone" ]] || fail "expected install-docker.sh to be executable"
+  bash -n "$docker_standalone" || fail "install-docker.sh has syntax errors"
+  assert_contains "$docker_standalone" "lib/docker.sh"
+  assert_not_contains "$docker_standalone" "docker-ce docker-ce-cli"
+
+  local module
+  while IFS= read -r module; do
+    bash -n "$module" || fail "module has syntax errors: $module"
+  done < <(find "${ROOT_DIR}/lib" -name '*.sh' -type f | sort)
 }
 
 run_generation_tests() {
@@ -243,6 +271,14 @@ run_helper_tests() {
   parse_service_selection "pg-shortcut"
   [[ "${SELECT_PG_WRAPPER:-0}" -eq 1 ]] || fail "expected pg wrapper selection from 'pg-shortcut'"
 
+  parse_service_selection "7"
+  [[ "${SELECT_DOCKER:-0}" -eq 1 ]] || fail "expected docker selection from '7'"
+  [[ "${SELECT_PG_WRAPPER:-0}" -eq 0 ]] || fail "did not expect pg wrapper selection from '7'"
+
+  parse_service_selection "docker"
+  [[ "${SELECT_DOCKER:-0}" -eq 1 ]] || fail "expected docker selection from 'docker'"
+  [[ "${SELECT_CADDY:-0}" -eq 0 ]] || fail "did not expect caddy selection from 'docker'"
+
   parse_service_selection "1"
   [[ "${SELECT_PG_WRAPPER:-0}" -eq 0 ]] || fail "did not expect pg wrapper selection from '1'"
 
@@ -250,6 +286,7 @@ run_helper_tests() {
   assert_output_contains "$selection_output" "Select one or more components to install/deploy"
   assert_output_contains "$selection_output" "space-separated or comma-separated"
   assert_output_contains "$selection_output" "6) Install pg shortcut"
+  assert_output_contains "$selection_output" "7) Docker only"
 
   temp_file="$(mktemp)"
   if printf 'r\n' | confirm_overwrite "$temp_file"; then
@@ -358,6 +395,56 @@ run_smoke_tests() {
   assert_contains "$docker_log" "compose -p mysql -f ${temp_root}/docker/docker-mysql.yml up -d"
 }
 
+run_docker_only_tests() {
+  local temp_root
+  local action_log
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+  action_log="${temp_root}/actions.log"
+
+  export DATA_ROOT="$temp_root"
+  load_script
+
+  require_root() { echo "require_root" >>"$action_log"; }
+  detect_os() { echo "detect_os" >>"$action_log"; }
+  ensure_data_root_writable() { echo "ensure_data_root_writable" >>"$action_log"; }
+  ensure_directories() { echo "ensure_directories" >>"$action_log"; }
+  collect_service_selection() {
+    SELECT_DOCKER=1
+    SELECT_CADDY=0
+    SELECT_POSTGRES=0
+    SELECT_MYSQL=0
+    SELECT_RABBITMQ=0
+    SELECT_REDIS=0
+    SELECT_PG_WRAPPER=0
+  }
+  install_docker() { echo "install_docker" >>"$action_log"; }
+  install_caddy() { echo "install_caddy" >>"$action_log"; }
+  configure_postgres() { echo "configure_postgres" >>"$action_log"; }
+  configure_mysql() { echo "configure_mysql" >>"$action_log"; }
+  configure_rabbitmq() { echo "configure_rabbitmq" >>"$action_log"; }
+  configure_redis() { echo "configure_redis" >>"$action_log"; }
+  install_pg_wrapper() { echo "install_pg_wrapper" >>"$action_log"; }
+  show_summary() { echo "show_summary" >>"$action_log"; }
+
+  main
+
+  assert_contains "$action_log" "install_docker"
+  assert_contains "$action_log" "show_summary"
+  assert_not_contains "$action_log" "install_caddy"
+  assert_not_contains "$action_log" "configure_postgres"
+  assert_not_contains "$action_log" "configure_mysql"
+  assert_not_contains "$action_log" "configure_rabbitmq"
+  assert_not_contains "$action_log" "configure_redis"
+  assert_not_contains "$action_log" "install_pg_wrapper"
+}
+
+run_loader_tests() {
+  load_script
+  assert_equals "local" "${LINUXSHELL_MODULE_SOURCE:-}"
+  assert_equals "$ROOT_DIR" "${LINUXSHELL_MODULE_ROOT:-}"
+}
+
 main() {
   local suite="${1:-all}"
 
@@ -374,11 +461,19 @@ main() {
     smoke)
       run_smoke_tests
       ;;
+    docker-only)
+      run_docker_only_tests
+      ;;
+    loader)
+      run_loader_tests
+      ;;
     all)
       run_skeleton_tests
       run_generation_tests
       run_helper_tests
       run_smoke_tests
+      run_docker_only_tests
+      run_loader_tests
       ;;
     *)
       fail "unknown suite: $suite"

@@ -38,16 +38,17 @@ load_linuxshell_modules() {
 load_linuxshell_modules \
   lib/config.sh \
   lib/common.sh \
-  lib/docker.sh \
-  lib/caddy.sh \
-  lib/compose.sh \
-  lib/pg-wrapper.sh \
-  lib/services/postgres.sh \
-  lib/services/mysql.sh \
-  lib/services/rabbitmq.sh \
-  lib/services/redis.sh \
-  lib/deploy-main.sh
+  lib/docker.sh
+
+install_docker_main() {
+  require_root
+  detect_os
+  install_docker
+  print_step "Docker installation summary"
+  docker --version
+  docker compose version
+}
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
+  install_docker_main "$@"
 fi
