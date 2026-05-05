@@ -14,6 +14,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 
 ---
 
+## 仅安装 Docker
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/install-docker.sh)
+```
+
+该入口只安装 Docker Engine 与 Docker Compose plugin。完整部署仍使用 `deploy.sh`。
+
+---
+
 ## 支持的组件
 
 | 编号 | 组件 | 默认端口 |
@@ -23,8 +33,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 | 3 | MySQL 8.4 | 3306 |
 | 4 | RabbitMQ（含管理界面 & Web STOMP） | 5672 / 15672 / 15674 |
 | 5 | Redis 8 | 6379 |
+| 6 | Install pg shortcut | — |
+| 7 | Docker only | — |
 
 运行后按提示选择需要安装的组件（可多选，空格或逗号分隔）。
+
+选择 Caddy 或任意容器服务时，脚本会自动确保 Docker 与 Docker Compose plugin 已安装；不需要额外选择 Docker only。
 
 ## 快捷使用 psql
 
