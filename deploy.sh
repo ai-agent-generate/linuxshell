@@ -2,6 +2,44 @@
 
 set -euo pipefail
 
+LINUXSHELL_RAW_BASE_URL="${LINUXSHELL_RAW_BASE_URL:-https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main}"
+LINUXSHELL_MODULE_ROOT=""
+LINUXSHELL_MODULE_SOURCE=""
+
+load_linuxshell_modules() {
+  local script_dir
+  local module_root
+  local module
+
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P || pwd)"
+  module_root="$script_dir"
+
+  if [[ -f "${module_root}/lib/config.sh" ]]; then
+    LINUXSHELL_MODULE_SOURCE="local"
+  else
+    module_root="$(mktemp -d)"
+    LINUXSHELL_MODULE_SOURCE="remote"
+    for module in "$@"; do
+      mkdir -p "${module_root}/$(dirname "$module")"
+      if ! curl -fsSL "${LINUXSHELL_RAW_BASE_URL}/${module}" -o "${module_root}/${module}"; then
+        echo "Failed to download module: ${LINUXSHELL_RAW_BASE_URL}/${module}" >&2
+        return 1
+      fi
+    done
+  fi
+
+  LINUXSHELL_MODULE_ROOT="$module_root"
+  for module in "$@"; do
+    # shellcheck disable=SC1090
+    source "${module_root}/${module}"
+  done
+}
+
+load_linuxshell_modules \
+  lib/config.sh \
+  lib/common.sh \
+  lib/docker.sh
+
 DATA_ROOT="${DATA_ROOT:-/data}"
 DOCKER_DIR="${DOCKER_DIR:-${DATA_ROOT}/docker}"
 CADDY_ETC_DIR="${CADDY_ETC_DIR:-/etc/caddy}"
@@ -56,6 +94,7 @@ SELECT_MYSQL=0
 SELECT_RABBITMQ=0
 SELECT_REDIS=0
 SELECT_PG_WRAPPER=0
+SELECT_DOCKER=0
 
 POSTGRES_PORT="$DEFAULT_POSTGRES_PORT"
 POSTGRES_DB="$DEFAULT_POSTGRES_DB"
@@ -201,6 +240,7 @@ parse_service_selection() {
   SELECT_RABBITMQ=0
   SELECT_REDIS=0
   SELECT_PG_WRAPPER=0
+  SELECT_DOCKER=0
 
   for token in $selection; do
     normalized="$(to_lower "$token")"
@@ -223,6 +263,9 @@ parse_service_selection() {
       6|pg|pg-shortcut)
         SELECT_PG_WRAPPER=1
         ;;
+      7|docker)
+        SELECT_DOCKER=1
+        ;;
       *)
         echo "Ignoring unknown selection: $token" >&2
         ;;
@@ -241,6 +284,7 @@ Select one or more components to install/deploy (space-separated or comma-separa
   4) RabbitMQ
   5) Redis
   6) Install pg shortcut (PostgreSQL already running)
+  7) Docker only
 EOF
 
   while true; do
@@ -248,7 +292,7 @@ EOF
     IFS= read -r selection
     parse_service_selection "$selection"
 
-    if (( SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS || SELECT_PG_WRAPPER )); then
+    if (( SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS || SELECT_PG_WRAPPER || SELECT_DOCKER )); then
       return 0
     fi
 
@@ -809,6 +853,9 @@ show_summary() {
   if (( SELECT_CADDY )); then
     echo "Caddy installed via apt."
   fi
+  if (( SELECT_DOCKER )); then
+    echo "Docker and Docker Compose plugin installed."
+  fi
   if (( SELECT_POSTGRES )); then
     echo "PostgreSQL: ${POSTGRES_COMPOSE_FILE} | data ${POSTGRES_DIR} | port ${POSTGRES_PORT} | user ${POSTGRES_USER} | network ${SHARED_NETWORK_NAME}"
   fi
@@ -833,7 +880,7 @@ main() {
   ensure_directories
   collect_service_selection
 
-  if (( SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS )); then
+  if (( SELECT_DOCKER || SELECT_CADDY || SELECT_POSTGRES || SELECT_MYSQL || SELECT_RABBITMQ || SELECT_REDIS )); then
     install_docker
   fi
 
