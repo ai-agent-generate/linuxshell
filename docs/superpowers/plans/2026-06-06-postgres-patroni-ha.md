@@ -707,6 +707,7 @@ enable_etcd_rbac() {
     return 0
   fi
   ETCDCTL_API=3 etcdctl --endpoints="$ep" user add root:"${PG_HA_ETCD_PASSWORD}"
+  ETCDCTL_API=3 etcdctl --endpoints="$ep" user grant-role root root
   ETCDCTL_API=3 etcdctl --endpoints="$ep" user add patroni:"${PG_HA_ETCD_PASSWORD}"
   ETCDCTL_API=3 etcdctl --endpoints="$ep" role add patroni-role
   ETCDCTL_API=3 etcdctl --endpoints="$ep" role grant-permission patroni-role --prefix=true readwrite "/service/${PG_HA_CLUSTER_NAME}/"

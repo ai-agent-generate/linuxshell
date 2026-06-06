@@ -135,6 +135,11 @@ run_etcd_tests() {
   assert_file_exists "${temp_root}/dropin/override.conf"
   assert_contains "${temp_root}/dropin/override.conf" "ExecStart="
   assert_contains "${temp_root}/dropin/override.conf" "--config-file=${temp_root}/etcd.conf.yml"
+
+  assert_function_exists install_etcd
+  assert_function_exists start_etcd
+  assert_function_exists enable_etcd_rbac
+  assert_function_exists etcd_health_check
 }
 
 run_skeleton_tests() {
