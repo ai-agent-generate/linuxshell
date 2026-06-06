@@ -219,6 +219,12 @@ run_patroni_tests() {
   assert_contains "${temp_root}/patroni.service" "ExecStart=/usr/bin/patroni ${temp_root}/patroni.yml"
   assert_contains "${temp_root}/patroni.service" "KillMode=process"
   assert_contains "${temp_root}/patroni.service" "Restart=no"
+
+  assert_function_exists add_pgdg_repo
+  assert_function_exists install_postgres_patroni
+  assert_function_exists disable_default_cluster
+  assert_function_exists start_patroni
+  assert_function_exists bootstrap_patroni
 }
 
 run_skeleton_tests() {

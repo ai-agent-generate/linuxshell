@@ -117,3 +117,50 @@ TimeoutStartSec=900
 WantedBy=multi-user.target
 EOF
 }
+
+add_pgdg_repo() {
+  print_step "Adding PGDG apt repository"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y postgresql-common
+  # 官方脚本按 lsb_release -cs 自动选 suite,跨 Ubuntu 版本稳定
+  /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+}
+
+install_postgres_patroni() {
+  print_step "Installing PostgreSQL ${PG_HA_MAJOR_VERSION} + Patroni"
+  add_pgdg_repo
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  # PGDG patroni 与 PG 同源;python3-etcd 是 etcd3 模块的必需依赖
+  apt-get install -y \
+    "postgresql-${PG_HA_MAJOR_VERSION}" \
+    "postgresql-client-${PG_HA_MAJOR_VERSION}" \
+    patroni \
+    python3-etcd
+}
+
+# PGDG 装包会自动建并启动默认 cluster 占用 5432;交还控制权给 Patroni
+disable_default_cluster() {
+  print_step "Disabling distribution default PostgreSQL cluster"
+  if pg_lsclusters -h 2>/dev/null | grep -q "^${PG_HA_MAJOR_VERSION}\s\+main"; then
+    pg_dropcluster --stop "${PG_HA_MAJOR_VERSION}" main || true
+  fi
+  systemctl disable --now postgresql 2>/dev/null || true
+  mkdir -p "${PG_HA_PGDATA}"
+  chown -R postgres:postgres "${PG_HA_PGDATA}"
+}
+
+start_patroni() {
+  write_patroni_unit
+  chown postgres:postgres "${PG_HA_PATRONI_YAML}"
+  systemctl daemon-reload
+  systemctl enable patroni
+  systemctl restart patroni
+}
+
+# primary 首次引导:等 etcd quorum + 启用 RBAC,再起 Patroni 成为 leader
+bootstrap_patroni() {
+  pg_ha_wait_etcd_quorum
+  enable_etcd_rbac
+  start_patroni
+}

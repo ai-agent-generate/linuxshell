@@ -1056,7 +1056,7 @@ disable_default_cluster() {
   fi
   systemctl disable --now postgresql 2>/dev/null || true
   mkdir -p "${PG_HA_PGDATA}"
-  chown -R postgres:postgres "$(dirname "${PG_HA_PGDATA}")"
+  chown -R postgres:postgres "${PG_HA_PGDATA}"
 }
 
 start_patroni() {
