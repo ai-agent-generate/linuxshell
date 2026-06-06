@@ -94,6 +94,24 @@ run_common_tests() {
   [[ ${#pw} -ge 16 ]] || fail "expected generated password length >= 16"
 }
 
+run_precheck_tests() {
+  load_pg_ha
+
+  # watchdog: off 时直接通过
+  ( export PG_HA_WATCHDOG="off"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    pg_ha_check_watchdog || fail "expected watchdog off to pass" )
+
+  # quorum 等待:mock etcdctl 成功立即返回 0
+  ( source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    etcdctl() { return 0; }
+    pg_ha_wait_etcd_quorum || fail "expected quorum wait to succeed when etcdctl healthy" )
+
+  assert_function_exists pg_ha_check_connectivity
+  assert_function_exists pg_ha_check_time_sync
+}
+
 run_skeleton_tests() {
   local entry="${ROOT_DIR}/install-pg-ha.sh"
   assert_file_exists "$entry"
@@ -124,7 +142,8 @@ main() {
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests ;;
+    precheck) run_precheck_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

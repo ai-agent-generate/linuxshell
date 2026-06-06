@@ -40,3 +40,43 @@ pg_ha_require_passwords() {
     fi
   done
 }
+
+pg_ha_check_watchdog() {
+  [[ "$(to_lower "${PG_HA_WATCHDOG}")" == "on" ]] || return 0
+  if [[ ! -e /dev/watchdog ]]; then
+    echo "PG_HA_WATCHDOG=on but /dev/watchdog is unavailable on this host." >&2
+    echo "Set PG_HA_WATCHDOG=off for this environment, or enable a watchdog device." >&2
+    return 1
+  fi
+}
+
+pg_ha_wait_etcd_quorum() {
+  local endpoints attempt
+  endpoints="${PG_HA_NODE1_IP}:${PG_HA_ETCD_CLIENT_PORT},${PG_HA_NODE2_IP}:${PG_HA_ETCD_CLIENT_PORT},${PG_HA_NODE3_IP}:${PG_HA_ETCD_CLIENT_PORT}"
+  for attempt in $(seq 1 30); do
+    if ETCDCTL_API=3 etcdctl --endpoints="$endpoints" endpoint health --cluster >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "etcd cluster not healthy. Ensure all three etcd nodes are up and ${PG_HA_ETCD_CLIENT_PORT}/${PG_HA_ETCD_PEER_PORT} are reachable between nodes." >&2
+  return 1
+}
+
+pg_ha_check_connectivity() {
+  local host="$1" port="$2"
+  if command_exists nc; then
+    nc -z -w 3 "$host" "$port" >/dev/null 2>&1
+  else
+    timeout 3 bash -c ">/dev/tcp/${host}/${port}" >/dev/null 2>&1
+  fi
+}
+
+pg_ha_check_time_sync() {
+  if command_exists timedatectl; then
+    if ! timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q '^yes$'; then
+      echo "Warning: system clock not NTP-synchronized; etcd/Patroni leases are time-sensitive." >&2
+      echo "Consider: apt-get install -y chrony" >&2
+    fi
+  fi
+}
