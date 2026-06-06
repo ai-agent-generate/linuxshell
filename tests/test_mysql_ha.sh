@@ -30,7 +30,7 @@ load_mysql_ha() {
 }
 
 run_config_tests() {
-  ( unset DATA_ROOT
+  ( unset DATA_ROOT MYSQL_HA_DATADIR MYSQL_HA_ORCH_DATADIR
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"
     assert_equals "/data" "${DATA_ROOT}"
     assert_equals "8.4" "${MYSQL_HA_VERSION}"
@@ -44,7 +44,8 @@ run_config_tests() {
     assert_equals "" "${MYSQL_HA_APP_ALLOWED_CIDR}"
     assert_equals "/data/mysql-ha/data" "${MYSQL_HA_DATADIR}"
   )
-  ( export DATA_ROOT="/opt/x" MYSQL_HA_VERSION="8.4" MYSQL_HA_PROXY_PORT="7000"
+  ( unset MYSQL_HA_DATADIR MYSQL_HA_ORCH_DATADIR
+    export DATA_ROOT="/opt/x" MYSQL_HA_PROXY_PORT="7000"
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"
     assert_equals "/opt/x" "${DATA_ROOT}"
     assert_equals "7000" "${MYSQL_HA_PROXY_PORT}"
