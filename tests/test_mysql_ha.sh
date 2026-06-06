@@ -208,6 +208,47 @@ run_orchestrator_tests() {
   assert_function_exists orchestrator_discover
 }
 
+run_mysqlchk_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export MYSQL_HA_NODE_IP="10.0.0.1"
+  export MYSQL_HA_MYSQLCHK_SCRIPT="${temp_root}/mysqlchk"
+  export MYSQL_HA_MYSQLCHK_SOCKET="${temp_root}/mysqlchk.socket"
+  export MYSQL_HA_MYSQLCHK_SERVICE="${temp_root}/mysqlchk@.service"
+  export MYSQL_HA_MYSQLCHK_CNF="${temp_root}/mysqlchk.cnf"
+  export MYSQL_HA_MYSQLCHK_PASSWORD="chkpw"
+  load_mysql_ha
+
+  write_mysqlchk_script
+  assert_file_exists "${MYSQL_HA_MYSQLCHK_SCRIPT}"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "@@global.read_only"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "HTTP/1.1 200 OK"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "HTTP/1.1 503 Service Unavailable"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "Content-Length"
+  # 必须用 printf 输出 CRLF,不用 echo
+  assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" 'printf'
+  grep -q $'\\\\r\\\\n' "${MYSQL_HA_MYSQLCHK_SCRIPT}" || fail "mysqlchk must emit CRLF (\\r\\n)"
+
+  write_mysqlchk_cnf
+  assert_contains "${MYSQL_HA_MYSQLCHK_CNF}" "user=mysqlchk"
+  assert_contains "${MYSQL_HA_MYSQLCHK_CNF}" "password=chkpw"
+  assert_mode "${MYSQL_HA_MYSQLCHK_CNF}" "600"
+
+  write_mysqlchk_socket_unit
+  assert_contains "${MYSQL_HA_MYSQLCHK_SOCKET}" "ListenStream=10.0.0.1:9200"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SOCKET}" "Accept=yes"
+
+  write_mysqlchk_service_unit
+  assert_contains "${MYSQL_HA_MYSQLCHK_SERVICE}" "StandardInput=socket"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SERVICE}" "StandardOutput=socket"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SERVICE}" "ExecStart=${temp_root}/mysqlchk"
+
+  assert_function_exists setup_mysqlchk
+  assert_function_exists start_mysqlchk
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -217,7 +258,8 @@ main() {
     precheck) run_precheck_tests ;;
     mysqlcnf) run_mysql_cnf_tests ;;
     orchestrator) run_orchestrator_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests ;;
+    mysqlchk) run_mysqlchk_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
