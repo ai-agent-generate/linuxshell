@@ -254,6 +254,64 @@ run_haproxy_tests() {
   assert_function_exists start_haproxy
 }
 
+run_orchestration_tests() {
+  local temp_root action_log
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+  action_log="${temp_root}/actions.log"
+
+  export PG_HA_NODE1_IP="10.0.0.1" PG_HA_NODE2_IP="10.0.0.2" PG_HA_NODE3_IP="10.0.0.3"
+  export PG_HA_ETCD_PASSWORD=x PG_HA_REST_PASSWORD=x PG_HA_SUPERUSER_PASSWORD=x
+  export PG_HA_REPLICATION_PASSWORD=x PG_HA_REWIND_PASSWORD=x PG_HA_STATS_PASSWORD=x
+  export PG_HA_APP_ALLOWED_CIDR="10.0.0.0/24"
+  load_pg_ha
+
+  # mock 所有副作用函数
+  require_root() { :; }
+  detect_os() { :; }
+  install_etcd() { echo install_etcd >>"$action_log"; }
+  write_etcd_config() { echo write_etcd_config >>"$action_log"; }
+  start_etcd() { echo start_etcd >>"$action_log"; }
+  enable_etcd_rbac() { echo enable_etcd_rbac >>"$action_log"; }
+  install_postgres_patroni() { echo install_postgres_patroni >>"$action_log"; }
+  disable_default_cluster() { echo disable_default_cluster >>"$action_log"; }
+  write_patroni_yaml() { echo write_patroni_yaml >>"$action_log"; }
+  start_patroni() { echo start_patroni >>"$action_log"; }
+  bootstrap_patroni() { echo bootstrap_patroni >>"$action_log"; }
+  install_haproxy() { echo install_haproxy >>"$action_log"; }
+  start_haproxy() { echo start_haproxy >>"$action_log"; }
+  pg_ha_wait_etcd_quorum() { :; }
+  pg_ha_check_watchdog() { :; }
+  pg_ha_check_time_sync() { :; }
+  pg_ha_show_summary() { echo summary >>"$action_log"; }
+
+  # quorum 角色:只装 etcd,不碰 patroni/haproxy
+  : >"$action_log"
+  pg_ha_collect_config() { PG_HA_ROLE=quorum; PG_HA_NODE_NAME=node3; PG_HA_NODE_IP=10.0.0.3; }
+  pg_ha_main
+  assert_contains "$action_log" "install_etcd"
+  assert_not_contains "$action_log" "install_postgres_patroni"
+  assert_not_contains "$action_log" "install_haproxy"
+
+  # primary 角色:etcd + patroni + haproxy + bootstrap
+  : >"$action_log"
+  pg_ha_collect_config() { PG_HA_ROLE=primary; PG_HA_NODE_NAME=node1; PG_HA_NODE_IP=10.0.0.1; }
+  pg_ha_main
+  assert_contains "$action_log" "install_etcd"
+  assert_contains "$action_log" "install_postgres_patroni"
+  assert_contains "$action_log" "bootstrap_patroni"
+  assert_contains "$action_log" "install_haproxy"
+
+  # replica 角色:etcd + patroni(start,非 bootstrap) + haproxy
+  : >"$action_log"
+  pg_ha_collect_config() { PG_HA_ROLE=replica; PG_HA_NODE_NAME=node2; PG_HA_NODE_IP=10.0.0.2; }
+  pg_ha_main
+  assert_contains "$action_log" "install_postgres_patroni"
+  assert_contains "$action_log" "start_patroni"
+  assert_not_contains "$action_log" "bootstrap_patroni"
+  assert_contains "$action_log" "install_haproxy"
+}
+
 run_skeleton_tests() {
   local entry="${ROOT_DIR}/install-pg-ha.sh"
   assert_file_exists "$entry"
@@ -288,7 +346,8 @@ main() {
     etcd) run_etcd_tests ;;
     patroni) run_patroni_tests ;;
     haproxy) run_haproxy_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests ;;
+    orchestration) run_orchestration_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

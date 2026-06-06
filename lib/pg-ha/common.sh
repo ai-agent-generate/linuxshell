@@ -80,3 +80,31 @@ pg_ha_check_time_sync() {
     fi
   fi
 }
+
+pg_ha_collect_config() {
+  local role_input
+  role_input="$(prompt_with_default "Node role (1=primary, 2=replica, 3=etcd-quorum)" "1")"
+  pg_ha_parse_role "$role_input"
+
+  PG_HA_NODE1_IP="$(prompt_with_default "Node1 (primary) IP" "${PG_HA_NODE1_IP}")"
+  PG_HA_NODE2_IP="$(prompt_with_default "Node2 (replica) IP" "${PG_HA_NODE2_IP}")"
+  PG_HA_NODE3_IP="$(prompt_with_default "Node3 (etcd quorum) IP" "${PG_HA_NODE3_IP}")"
+
+  case "${PG_HA_ROLE}" in
+    primary) PG_HA_NODE_NAME="node1"; PG_HA_NODE_IP="${PG_HA_NODE1_IP}" ;;
+    replica) PG_HA_NODE_NAME="node2"; PG_HA_NODE_IP="${PG_HA_NODE2_IP}" ;;
+    quorum)  PG_HA_NODE_NAME="node3"; PG_HA_NODE_IP="${PG_HA_NODE3_IP}" ;;
+  esac
+
+  # etcd RBAC 密码三台一致(node3 仅 etcd 也需 root 密码用于 auth)
+  PG_HA_ETCD_PASSWORD="$(prompt_with_default "etcd password (MUST be identical on all nodes)" "${PG_HA_ETCD_PASSWORD}")"
+
+  if [[ "${PG_HA_ROLE}" != "quorum" ]]; then
+    PG_HA_APP_ALLOWED_CIDR="$(prompt_with_default "Application allowed CIDR (e.g. 10.0.0.0/24)" "${PG_HA_APP_ALLOWED_CIDR}")"
+    PG_HA_REST_PASSWORD="$(prompt_with_default "Patroni REST password (identical on PG nodes)" "${PG_HA_REST_PASSWORD}")"
+    PG_HA_SUPERUSER_PASSWORD="$(prompt_with_default "postgres superuser password (identical on PG nodes)" "${PG_HA_SUPERUSER_PASSWORD}")"
+    PG_HA_REPLICATION_PASSWORD="$(prompt_with_default "replication password (identical on PG nodes)" "${PG_HA_REPLICATION_PASSWORD}")"
+    PG_HA_REWIND_PASSWORD="$(prompt_with_default "rewind password (identical on PG nodes)" "${PG_HA_REWIND_PASSWORD}")"
+    PG_HA_STATS_PASSWORD="$(prompt_with_default "HAProxy stats password" "${PG_HA_STATS_PASSWORD:-$(pg_ha_generate_password)}")"
+  fi
+}
