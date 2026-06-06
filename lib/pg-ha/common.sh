@@ -51,15 +51,18 @@ pg_ha_check_watchdog() {
 }
 
 pg_ha_wait_etcd_quorum() {
-  local endpoints attempt
-  endpoints="${PG_HA_NODE1_IP}:${PG_HA_ETCD_CLIENT_PORT},${PG_HA_NODE2_IP}:${PG_HA_ETCD_CLIENT_PORT},${PG_HA_NODE3_IP}:${PG_HA_ETCD_CLIENT_PORT}"
+  local endpoint attempt
+  endpoint="${PG_HA_NODE_IP:-127.0.0.1}:${PG_HA_ETCD_CLIENT_PORT}"
   for attempt in $(seq 1 30); do
-    if ETCDCTL_API=3 etcdctl --endpoints="$endpoints" endpoint health --cluster >/dev/null 2>&1; then
+    # 用 etcd /health 端点判断:它无需认证,而 `endpoint health --cluster` 在
+    # RBAC auth 启用后(primary 引导阶段会启用)的 member-list 步骤需要凭据,
+    # 会导致 replica 部署时预检误失败。本机 etcd 健康即表示集群有多数派可服务。
+    if curl -fsS "http://${endpoint}/health" 2>/dev/null | grep -q '"health"[[:space:]]*:[[:space:]]*"true"'; then
       return 0
     fi
     sleep 2
   done
-  echo "etcd cluster not healthy. Ensure all three etcd nodes are up and ${PG_HA_ETCD_CLIENT_PORT}/${PG_HA_ETCD_PEER_PORT} are reachable between nodes." >&2
+  echo "etcd not healthy at ${endpoint}. Ensure all three etcd nodes are up and ${PG_HA_ETCD_CLIENT_PORT}/${PG_HA_ETCD_PEER_PORT} are reachable between nodes." >&2
   return 1
 }
 

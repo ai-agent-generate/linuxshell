@@ -35,24 +35,26 @@ EOF
 
 install_etcd() {
   print_step "Installing etcd"
-  if command_exists etcd; then
-    echo "etcd already installed."
-    return 0
-  fi
   export DEBIAN_FRONTEND=noninteractive
-  if apt-get install -y etcd-server etcd-client 2>/dev/null; then
-    echo "etcd installed from distribution packages."
-  else
-    echo "Distribution etcd unavailable; installing official binary v3.5.16." >&2
-    local ver="v3.5.16" arch tmp
-    arch="$(dpkg --print-architecture)"
-    tmp="$(mktemp -d)"
+  # 安装发行版包以获得 etcd 用户与 systemd unit(ExecStart 由 dropin 覆盖);幂等。
+  apt-get install -y etcd-server etcd-client 2>/dev/null || true
+
+  # Patroni 4.x 的 etcd3 客户端要求 v3 gRPC gateway 暴露在 /v3/(etcd 3.5+)。
+  # Ubuntu 24.04 的 apt etcd 是 3.4(gateway 在 /v3beta/),与 Patroni 4.x 不兼容,
+  # 会报 "Failed to get list of machines from .../v3" → 必须确保 etcd >= 3.5。
+  local cur ver arch tmp
+  cur="$(etcd --version 2>/dev/null | awk '/etcd Version/{print $3}')"
+  if [[ -z "$cur" || "$(printf '3.5.0\n%s\n' "$cur" | sort -V | tail -1)" != "$cur" ]]; then
+    ver="v3.5.16"; arch="$(dpkg --print-architecture)"; tmp="$(mktemp -d)"
+    echo "Installing etcd ${ver} binary (current '${cur:-none}' < 3.5, incompatible with Patroni 4.x)." >&2
     curl -fsSL "https://github.com/etcd-io/etcd/releases/download/${ver}/etcd-${ver}-linux-${arch}.tar.gz" \
       -o "${tmp}/etcd.tar.gz"
     tar -xzf "${tmp}/etcd.tar.gz" -C "${tmp}" --strip-components=1
     install -m 0755 "${tmp}/etcd" "${tmp}/etcdctl" /usr/bin/
     rm -rf "${tmp}"
-    cat >/etc/systemd/system/etcd.service <<'UNIT'
+    # 若发行版包未提供 unit(纯二进制场景),自写一个
+    if [[ ! -f /lib/systemd/system/etcd.service && ! -f /usr/lib/systemd/system/etcd.service ]]; then
+      cat >/etc/systemd/system/etcd.service <<'UNIT'
 [Unit]
 Description=etcd
 After=network-online.target
@@ -67,6 +69,7 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 UNIT
+    fi
   fi
   mkdir -p "${PG_HA_ETCD_DATA}"
 }

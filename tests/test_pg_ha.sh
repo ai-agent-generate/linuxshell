@@ -105,11 +105,11 @@ run_precheck_tests() {
     source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
     pg_ha_check_watchdog || fail "expected watchdog off to pass" )
 
-  # quorum 等待:mock etcdctl 成功立即返回 0
+  # quorum 等待:mock curl 返回健康 JSON(wait_etcd_quorum 用 etcd /health 端点)
   ( source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
-    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
-    etcdctl() { return 0; }
-    pg_ha_wait_etcd_quorum || fail "expected quorum wait to succeed when etcdctl healthy" )
+    export PG_HA_NODE_IP=10.0.0.1
+    curl() { echo '{"health":"true","reason":""}'; }
+    pg_ha_wait_etcd_quorum || fail "expected quorum wait to succeed when etcd /health is true" )
 
   assert_function_exists pg_ha_check_connectivity
   assert_function_exists pg_ha_check_time_sync

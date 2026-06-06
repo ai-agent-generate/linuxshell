@@ -148,6 +148,10 @@ disable_default_cluster() {
   systemctl disable --now postgresql 2>/dev/null || true
   mkdir -p "${PG_HA_PGDATA}"
   chown postgres:postgres "${PG_HA_PGDATA}"
+  # PostgreSQL 要求 data_dir 权限为 0700/0750,否则拒绝启动。
+  # replica 的 pg_basebackup 会沿用预建目录权限(primary 由 initdb 自设 0700),
+  # 故必须显式收紧,否则 replica 报 "data directory has invalid permissions"。
+  chmod 0700 "${PG_HA_PGDATA}"
 }
 
 start_patroni() {
