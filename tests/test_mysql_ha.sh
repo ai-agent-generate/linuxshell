@@ -283,6 +283,33 @@ run_watcher_tests() {
   assert_function_exists start_watcher
 }
 
+run_haproxy_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export MYSQL_HA_NODE1_IP="10.0.0.1" MYSQL_HA_NODE2_IP="10.0.0.2"
+  export MYSQL_HA_HAPROXY_CFG="${temp_root}/haproxy.cfg"
+  export MYSQL_HA_STATS_PASSWORD="statspw"
+  load_mysql_ha
+
+  write_haproxy_config
+  assert_file_exists "${MYSQL_HA_HAPROXY_CFG}"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "bind *:6446"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "mode tcp"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "option httpchk"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "http-check send meth GET uri /"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "http-check expect status 200"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "on-marked-down shutdown-sessions"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "server node1 10.0.0.1:3306 check port 9200"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "server node2 10.0.0.2:3306 check port 9200"
+  assert_contains "${MYSQL_HA_HAPROXY_CFG}" "stats auth admin:statspw"
+  assert_mode "${MYSQL_HA_HAPROXY_CFG}" "600"
+
+  assert_function_exists install_haproxy
+  assert_function_exists start_haproxy
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -294,7 +321,8 @@ main() {
     orchestrator) run_orchestrator_tests ;;
     mysqlchk) run_mysqlchk_tests ;;
     watcher) run_watcher_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests ;;
+    haproxy) run_haproxy_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests; run_haproxy_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
