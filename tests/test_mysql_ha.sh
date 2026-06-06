@@ -105,13 +105,28 @@ run_common_tests() {
   [[ "$pw" =~ ^[A-Za-z0-9]+$ ]] || fail "generated password must be alphanumeric only: $pw"
 }
 
+run_precheck_tests() {
+  load_mysql_ha
+  assert_function_exists mysql_ha_check_connectivity
+  assert_function_exists mysql_ha_check_time_sync
+  assert_function_exists mysql_ha_preflight_connectivity
+  assert_function_exists mysql_ha_wait_raft_quorum
+
+  # raft quorum 等待:mock curl 返回 healthy 立即成功
+  ( source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"
+    export MYSQL_HA_ORCH_HTTP_PASSWORD=x MYSQL_HA_ORCH_PORT=3000
+    curl() { echo '{"Healthy":true}'; }
+    mysql_ha_wait_raft_quorum || fail "expected raft quorum wait to succeed when healthy" )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests ;;
+    precheck) run_precheck_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
