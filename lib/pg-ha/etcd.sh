@@ -84,7 +84,10 @@ start_etcd() {
   fi
   systemctl daemon-reload
   systemctl enable etcd
-  systemctl restart etcd
+  # --no-block:单台 etcd(Type=notify)在多数派形成前不会 ready,阻塞式 restart
+  # 会卡到超时失败。每台脚本各自 --no-block 启动本机 etcd,组网由各成员后台完成,
+  # 真正的就绪门禁交给 pg_ha_wait_etcd_quorum(等本机 etcd /health 变 healthy)。
+  systemctl restart etcd --no-block
 }
 
 etcd_health_check() {

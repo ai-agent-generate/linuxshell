@@ -90,14 +90,20 @@ RULES
 }
 
 pg_ha_preflight_connectivity() {
-  local node_ip
+  # 非阻塞:仅探测并提示。因每台分别运行、按 quorum→primary→replica 顺序部署时,
+  # 后部署节点的 etcd 尚未启动属正常,不应中断。真正的就绪门禁由
+  # pg_ha_wait_etcd_quorum(本机 etcd /health)负责。
+  local node_ip unreachable=0
   for node_ip in "${PG_HA_NODE1_IP}" "${PG_HA_NODE2_IP}" "${PG_HA_NODE3_IP}"; do
     if ! pg_ha_check_connectivity "$node_ip" "${PG_HA_ETCD_CLIENT_PORT}"; then
-      echo "Cannot reach etcd client port ${PG_HA_ETCD_CLIENT_PORT} on ${node_ip}." >&2
-      echo "Ensure etcd is up there and ${PG_HA_ETCD_CLIENT_PORT}/${PG_HA_ETCD_PEER_PORT} are open between nodes." >&2
-      return 1
+      echo "Note: etcd ${PG_HA_ETCD_CLIENT_PORT} on ${node_ip} not reachable yet (node may not be started)." >&2
+      unreachable=1
     fi
   done
+  if [[ "$unreachable" -eq 1 ]]; then
+    echo "If this persists after all nodes are deployed, open ${PG_HA_ETCD_CLIENT_PORT}/${PG_HA_ETCD_PEER_PORT} between nodes." >&2
+  fi
+  return 0
 }
 
 pg_ha_check_time_sync() {
@@ -110,6 +116,14 @@ pg_ha_check_time_sync() {
 }
 
 pg_ha_collect_config() {
+  cat >&2 <<'GUIDE'
+
+=== PostgreSQL 高可用部署 ===
+本脚本需在【每台机器各运行一次】,每次选择"本机"的角色(这是正常流程,不是重复)。
+推荐顺序: (1) 先在 etcd-quorum 节点运行 -> (2) 再 primary(主库) -> (3) 最后 replica(从库)
+三个节点 IP 与各项密码,必须在所有节点上填写【完全一致】。
+
+GUIDE
   local role_input
   role_input="$(prompt_with_default "Node role (1=primary, 2=replica, 3=etcd-quorum)" "1")"
   pg_ha_parse_role "$role_input"
