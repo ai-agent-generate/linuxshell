@@ -136,7 +136,7 @@ run_etcd_tests() {
 
   local perm
   perm="$(stat -c '%a' "${temp_root}/etcd.conf.yml" 2>/dev/null || stat -f '%Lp' "${temp_root}/etcd.conf.yml")"
-  assert_equals "600" "$perm"
+  assert_equals "644" "$perm"
 
   write_etcd_unit_dropin
   assert_file_exists "${temp_root}/dropin/override.conf"

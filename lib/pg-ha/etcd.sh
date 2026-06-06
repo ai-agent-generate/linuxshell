@@ -16,7 +16,12 @@ initial-cluster: node1=http://${PG_HA_NODE1_IP}:${PG_HA_ETCD_PEER_PORT},node2=ht
 initial-cluster-state: new
 initial-cluster-token: ${PG_HA_CLUSTER_NAME}
 EOF
-  chmod 600 "${PG_HA_ETCD_CONFIG_FILE}"
+  # Ubuntu etcd 包以 etcd 用户(非 root)运行,配置文件需 etcd 可读;
+  # 文件不含真实凭据(RBAC 密码由 etcdctl 设置),644 即可。
+  chmod 644 "${PG_HA_ETCD_CONFIG_FILE}"
+  if id etcd >/dev/null 2>&1; then
+    chown etcd:etcd "${PG_HA_ETCD_CONFIG_FILE}"
+  fi
 }
 
 write_etcd_unit_dropin() {
@@ -68,6 +73,12 @@ UNIT
 
 start_etcd() {
   write_etcd_unit_dropin
+  # 确保 data-dir 存在且 etcd 用户可写(install_etcd 在已装时会提前 return,
+  # 故 data-dir 准备放在这里才可靠;二进制 fallback 无 etcd 用户时由 root 运行)。
+  mkdir -p "${PG_HA_ETCD_DATA}"
+  if id etcd >/dev/null 2>&1; then
+    chown -R etcd:etcd "${PG_HA_ETCD_DATA}"
+  fi
   systemctl daemon-reload
   systemctl enable etcd
   systemctl restart etcd
