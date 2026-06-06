@@ -68,6 +68,32 @@ run_config_tests() {
   )
 }
 
+run_common_tests() {
+  load_pg_ha
+
+  pg_ha_parse_role "1"; assert_equals "primary" "${PG_HA_ROLE}"
+  pg_ha_parse_role "primary"; assert_equals "primary" "${PG_HA_ROLE}"
+  pg_ha_parse_role "2"; assert_equals "replica" "${PG_HA_ROLE}"
+  pg_ha_parse_role "replica"; assert_equals "replica" "${PG_HA_ROLE}"
+  pg_ha_parse_role "3"; assert_equals "quorum" "${PG_HA_ROLE}"
+  pg_ha_parse_role "quorum"; assert_equals "quorum" "${PG_HA_ROLE}"
+  if pg_ha_parse_role "bogus" 2>/dev/null; then fail "expected bogus role to fail"; fi
+
+  ( export PG_HA_NODE1_IP="10.0.0.1" PG_HA_NODE2_IP="10.0.0.2" PG_HA_NODE3_IP="10.0.0.3"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    pg_ha_validate_node_ips || fail "expected valid IPs to pass" )
+  ( export PG_HA_NODE1_IP="10.0.0.1" PG_HA_NODE2_IP="" PG_HA_NODE3_IP="10.0.0.3"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    if pg_ha_validate_node_ips 2>/dev/null; then fail "expected empty IP to fail"; fi )
+  ( export PG_HA_NODE1_IP="not-an-ip" PG_HA_NODE2_IP="10.0.0.2" PG_HA_NODE3_IP="10.0.0.3"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    if pg_ha_validate_node_ips 2>/dev/null; then fail "expected invalid IP to fail"; fi )
+
+  local pw
+  pw="$(pg_ha_generate_password)"
+  [[ ${#pw} -ge 16 ]] || fail "expected generated password length >= 16"
+}
+
 run_skeleton_tests() {
   local entry="${ROOT_DIR}/install-pg-ha.sh"
   assert_file_exists "$entry"
@@ -97,7 +123,8 @@ main() {
   case "$suite" in
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
-    all) run_skeleton_tests; run_config_tests ;;
+    common) run_common_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
