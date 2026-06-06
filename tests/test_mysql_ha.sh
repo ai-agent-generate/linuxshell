@@ -172,6 +172,42 @@ run_mysql_cnf_tests() {
   assert_function_exists setup_replication
 }
 
+run_orchestrator_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export MYSQL_HA_NODE1_IP="10.0.0.1" MYSQL_HA_NODE2_IP="10.0.0.2" MYSQL_HA_NODE3_IP="10.0.0.3"
+  export MYSQL_HA_ORCH_CONF="${temp_root}/orchestrator.conf.json"
+  export MYSQL_HA_ORCH_DATADIR="${temp_root}/orch"
+  export MYSQL_HA_ORCH_PASSWORD="orchpw" MYSQL_HA_ORCH_HTTP_PASSWORD="httppw"
+  load_mysql_ha
+
+  write_orchestrator_config "10.0.0.1"
+  assert_file_exists "${MYSQL_HA_ORCH_CONF}"
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"BackendDB\": \"sqlite\""
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"RaftEnabled\": true"
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"RaftBind\": \"10.0.0.1\""
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"ListenAddress\": \"10.0.0.1:3000\""
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "10.0.0.3"
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"AuthenticationMethod\": \"basic\""
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"HTTPAuthPassword\": \"httppw\""
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"ApplyMySQLPromotionAfterMasterFailover\": true"
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"FailMasterPromotionIfSQLThreadNotUpToDate\": true"
+  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"ReasonableReplicationLagSeconds\": 60"
+  assert_mode "${MYSQL_HA_ORCH_CONF}" "600"
+  # JSON 合法性(无 python3 则跳过)
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m json.tool "${MYSQL_HA_ORCH_CONF}" >/dev/null || fail "orchestrator.conf.json is not valid JSON"
+  fi
+
+  assert_function_exists write_orchestrator_client_cnf
+  assert_function_exists write_orchestrator_unit
+  assert_function_exists install_orchestrator
+  assert_function_exists start_orchestrator
+  assert_function_exists orchestrator_discover
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -180,7 +216,8 @@ main() {
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
     mysqlcnf) run_mysql_cnf_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests ;;
+    orchestrator) run_orchestrator_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
