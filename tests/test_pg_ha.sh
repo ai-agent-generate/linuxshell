@@ -55,6 +55,8 @@ run_config_tests() {
     # DCS 时序硬约束:loop_wait + 2*retry_timeout <= ttl
     [[ $(( PG_HA_LOOP_WAIT + 2 * PG_HA_RETRY_TIMEOUT )) -le "${PG_HA_TTL}" ]] \
       || fail "DCS timing constraint violated"
+    assert_equals "auto" "${PG_HA_SERVER_TYPE}"
+    assert_equals "auto" "${PG_HA_WATCHDOG}"
     assert_equals "" "${PG_HA_SUPERUSER_PASSWORD}"
     assert_equals "" "${PG_HA_ETCD_PASSWORD}"
     assert_equals "" "${PG_HA_APP_ALLOWED_CIDR}"
@@ -95,6 +97,22 @@ run_common_tests() {
 
   assert_function_exists pg_ha_setup_watchdog
   assert_function_exists pg_ha_preflight_connectivity
+  assert_function_exists pg_ha_resolve_watchdog
+
+  ( export PG_HA_WATCHDOG="auto" PG_HA_SERVER_TYPE="cloud"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    assert_equals "cloud" "$(pg_ha_detect_server_type)"
+    assert_equals "off" "$(pg_ha_resolve_watchdog)" )
+  ( export PG_HA_WATCHDOG="auto" PG_HA_SERVER_TYPE="dedicated"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    assert_equals "dedicated" "$(pg_ha_detect_server_type)"
+    assert_equals "on" "$(pg_ha_resolve_watchdog)" )
+  ( export PG_HA_WATCHDOG="off" PG_HA_SERVER_TYPE="dedicated"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    assert_equals "off" "$(pg_ha_resolve_watchdog)" )
+  ( export PG_HA_WATCHDOG="on" PG_HA_SERVER_TYPE="cloud"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"
+    assert_equals "on" "$(pg_ha_resolve_watchdog)" )
 }
 
 run_precheck_tests() {
@@ -147,6 +165,27 @@ run_etcd_tests() {
   assert_function_exists start_etcd
   assert_function_exists enable_etcd_rbac
   assert_function_exists etcd_health_check
+
+  local rbac_log="${temp_root}/rbac.log"
+  (
+    export PG_HA_NODE1_IP="10.0.0.1" PG_HA_ETCD_PASSWORD="secret"
+    load_pg_ha
+    etcdctl() {
+      printf "%s\n" "$*" >>"${rbac_log}"
+      if [[ "$*" == *"auth status"* ]]; then
+        if [[ "$*" == *"--user=root:secret"* ]]; then
+          echo "Authentication Status: true"
+          return 0
+        fi
+        echo "Error: etcdserver: user name is empty" >&2
+        return 1
+      fi
+      return 0
+    }
+    enable_etcd_rbac
+  )
+  assert_contains "${rbac_log}" "--user=root:secret"
+  assert_not_contains "${rbac_log}" "user add root:secret"
 }
 
 run_patroni_tests() {
@@ -207,6 +246,28 @@ run_patroni_tests() {
     write_patroni_yaml "node1" "10.0.0.1"
     assert_contains "${temp_root}/patroni-off.yml" 'mode: "off"'
     assert_not_contains "${temp_root}/patroni-off.yml" "device: /dev/watchdog" )
+
+  # watchdog auto:cloud 分支默认关闭
+  ( export PG_HA_WATCHDOG="auto" PG_HA_SERVER_TYPE="cloud" PG_HA_PATRONI_YAML="${temp_root}/patroni-auto-cloud.yml"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/common.sh"; source "${ROOT_DIR}/lib/pg-ha/patroni.sh"
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    export PG_HA_ETCD_PASSWORD=x PG_HA_REST_PASSWORD=x PG_HA_SUPERUSER_PASSWORD=x
+    export PG_HA_REPLICATION_PASSWORD=x PG_HA_REWIND_PASSWORD=x PG_HA_APP_ALLOWED_CIDR=10.0.0.0/24
+    write_patroni_yaml "node1" "10.0.0.1"
+    assert_contains "${temp_root}/patroni-auto-cloud.yml" 'mode: "off"'
+    assert_not_contains "${temp_root}/patroni-auto-cloud.yml" "device: /dev/watchdog" )
+
+  # watchdog auto:dedicated 分支默认启用
+  ( export PG_HA_WATCHDOG="auto" PG_HA_SERVER_TYPE="dedicated" PG_HA_PATRONI_YAML="${temp_root}/patroni-auto-dedicated.yml"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/common.sh"; source "${ROOT_DIR}/lib/pg-ha/patroni.sh"
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    export PG_HA_ETCD_PASSWORD=x PG_HA_REST_PASSWORD=x PG_HA_SUPERUSER_PASSWORD=x
+    export PG_HA_REPLICATION_PASSWORD=x PG_HA_REWIND_PASSWORD=x PG_HA_APP_ALLOWED_CIDR=10.0.0.0/24
+    write_patroni_yaml "node1" "10.0.0.1"
+    assert_contains "${temp_root}/patroni-auto-dedicated.yml" "mode: required"
+    assert_contains "${temp_root}/patroni-auto-dedicated.yml" "device: /dev/watchdog" )
 
   # sync on 分支
   ( export PG_HA_SYNC_MODE="on" PG_HA_PATRONI_YAML="${temp_root}/patroni-sync.yml"

@@ -98,6 +98,10 @@ etcd_health_check() {
 # 仅在 primary 执行一次:创建 RBAC 用户并启用认证(集群级生效)
 enable_etcd_rbac() {
   local ep="${PG_HA_NODE1_IP}:${PG_HA_ETCD_CLIENT_PORT}"
+  if ETCDCTL_API=3 etcdctl --endpoints="$ep" --user="root:${PG_HA_ETCD_PASSWORD}" auth status 2>/dev/null | grep -q "Authentication Status: true"; then
+    echo "etcd auth already enabled."
+    return 0
+  fi
   if ETCDCTL_API=3 etcdctl --endpoints="$ep" auth status 2>/dev/null | grep -q "Authentication Status: true"; then
     echo "etcd auth already enabled."
     return 0

@@ -4,15 +4,17 @@
 write_patroni_yaml() {
   local node_name="$1"
   local node_ip="$2"
-  local sync_mode="false" sync_strict="false" watchdog_block
+  local sync_mode="false" sync_strict="false" watchdog_block watchdog_device watchdog_mode
 
   [[ "$(to_lower "${PG_HA_SYNC_MODE}")" == "on" ]] && sync_mode="true"
   [[ "$(to_lower "${PG_HA_SYNC_STRICT}")" == "on" ]] && sync_strict="true"
 
-  if [[ "$(to_lower "${PG_HA_WATCHDOG}")" == "on" ]]; then
+  watchdog_mode="$(pg_ha_resolve_watchdog)"
+  if [[ "$watchdog_mode" == "on" ]]; then
+    watchdog_device="$(pg_ha_watchdog_device)"
     watchdog_block="watchdog:
   mode: required
-  device: /dev/watchdog
+  device: ${watchdog_device}
   safety_margin: 5"
   else
     watchdog_block="watchdog:

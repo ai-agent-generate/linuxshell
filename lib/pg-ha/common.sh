@@ -41,11 +41,93 @@ pg_ha_require_passwords() {
   done
 }
 
+pg_ha_detect_server_type() {
+  local configured value path
+  configured="$(to_lower "${PG_HA_SERVER_TYPE:-auto}")"
+  case "$configured" in
+    cloud|dedicated)
+      printf "%s" "$configured"
+      return 0
+      ;;
+    auto|"")
+      ;;
+    *)
+      echo "Invalid PG_HA_SERVER_TYPE: ${PG_HA_SERVER_TYPE} (use auto, cloud, or dedicated)." >&2
+      return 1
+      ;;
+  esac
+
+  if command_exists systemd-detect-virt && systemd-detect-virt --quiet 2>/dev/null; then
+    printf "cloud"
+    return 0
+  fi
+
+  for path in /sys/class/dmi/id/product_name \
+              /sys/class/dmi/id/product_version \
+              /sys/class/dmi/id/sys_vendor \
+              /sys/class/dmi/id/chassis_asset_tag; do
+    [[ -r "$path" ]] || continue
+    value="$(to_lower "$(tr -d '\000' <"$path" 2>/dev/null || true)")"
+    case "$value" in
+      *amazon*|*ec2*|*google*|*gce*|*microsoft*|*azure*|*digitalocean*|*linode*|*akamai*|*vultr*|*alibaba*|*tencent*|*huawei*|*oracle*|*openstack*|*cloud*|*kvm*|*qemu*|*xen*|*vmware*|*virtualbox*|*bochs*|*hyper-v*|*parallels*)
+        printf "cloud"
+        return 0
+        ;;
+    esac
+  done
+
+  printf "dedicated"
+}
+
+pg_ha_resolve_watchdog() {
+  local configured server_type
+  configured="$(to_lower "${PG_HA_WATCHDOG:-auto}")"
+  case "$configured" in
+    on|off)
+      printf "%s" "$configured"
+      return 0
+      ;;
+    auto|"")
+      ;;
+    *)
+      echo "Invalid PG_HA_WATCHDOG: ${PG_HA_WATCHDOG} (use auto, on, or off)." >&2
+      return 1
+      ;;
+  esac
+
+  server_type="$(pg_ha_detect_server_type)" || return 1
+  case "$server_type" in
+    cloud) printf "off" ;;
+    dedicated) printf "on" ;;
+    *)
+      echo "Invalid resolved server type: ${server_type}" >&2
+      return 1
+      ;;
+  esac
+}
+
+pg_ha_watchdog_device() {
+  printf "%s" "${PG_HA_WATCHDOG_DEVICE:-/dev/watchdog}"
+}
+
 pg_ha_check_watchdog() {
-  [[ "$(to_lower "${PG_HA_WATCHDOG}")" == "on" ]] || return 0
-  if [[ ! -e /dev/watchdog ]]; then
-    echo "PG_HA_WATCHDOG=on but /dev/watchdog is unavailable on this host." >&2
-    echo "Set PG_HA_WATCHDOG=off for this environment, or enable a watchdog device." >&2
+  local watchdog_mode server_type device
+  watchdog_mode="$(pg_ha_resolve_watchdog)" || return 1
+  if [[ "$watchdog_mode" != "on" ]]; then
+    if [[ "$(to_lower "${PG_HA_WATCHDOG:-auto}")" == "auto" ]]; then
+      server_type="$(pg_ha_detect_server_type)" || return 1
+      if [[ "$server_type" == "cloud" ]]; then
+        echo "PG_HA_WATCHDOG=auto detected cloud/virtual server; watchdog disabled." >&2
+        echo "WARNING: split-brain protection is OFF unless your platform provides another fencing mechanism." >&2
+      fi
+    fi
+    return 0
+  fi
+
+  device="$(pg_ha_watchdog_device)"
+  if [[ ! -e "$device" ]]; then
+    echo "PG_HA_WATCHDOG=${PG_HA_WATCHDOG} resolved to on, but ${device} is unavailable on this host." >&2
+    echo "For cloud servers use PG_HA_WATCHDOG=auto/off; for dedicated servers enable a watchdog device or set PG_HA_WATCHDOG=off only if you accept split-brain risk." >&2
     return 1
   fi
 }
@@ -76,16 +158,19 @@ pg_ha_check_connectivity() {
 }
 
 pg_ha_setup_watchdog() {
-  [[ "$(to_lower "${PG_HA_WATCHDOG}")" == "on" ]] || return 0
+  local watchdog_mode device
+  watchdog_mode="$(pg_ha_resolve_watchdog)" || return 1
+  [[ "$watchdog_mode" == "on" ]] || return 0
+  device="$(pg_ha_watchdog_device)"
   echo "softdog" >/etc/modules-load.d/softdog.conf
   modprobe softdog 2>/dev/null || true
   cat >/etc/udev/rules.d/99-watchdog.rules <<'RULES'
-KERNEL=="watchdog", OWNER="postgres", GROUP="postgres", MODE="0600"
+KERNEL=="watchdog*", OWNER="postgres", GROUP="postgres", MODE="0600"
 RULES
   udevadm control --reload 2>/dev/null || true
   udevadm trigger 2>/dev/null || true
-  if [[ -e /dev/watchdog ]]; then
-    chown postgres:postgres /dev/watchdog 2>/dev/null || true
+  if [[ -e "$device" ]]; then
+    chown postgres:postgres "$device" 2>/dev/null || true
   fi
 }
 
@@ -142,6 +227,7 @@ GUIDE
   PG_HA_ETCD_PASSWORD="$(prompt_with_default "etcd password (MUST be identical on all nodes)" "${PG_HA_ETCD_PASSWORD}")"
 
   if [[ "${PG_HA_ROLE}" != "quorum" ]]; then
+    PG_HA_SERVER_TYPE="$(prompt_with_default "Server type (auto=detect, cloud, dedicated)" "${PG_HA_SERVER_TYPE}")"
     PG_HA_APP_ALLOWED_CIDR="$(prompt_with_default "Application allowed CIDR (e.g. 10.0.0.0/24)" "${PG_HA_APP_ALLOWED_CIDR}")"
     PG_HA_REST_PASSWORD="$(prompt_with_default "Patroni REST password (identical on PG nodes)" "${PG_HA_REST_PASSWORD}")"
     PG_HA_SUPERUSER_PASSWORD="$(prompt_with_default "postgres superuser password (identical on PG nodes)" "${PG_HA_SUPERUSER_PASSWORD}")"

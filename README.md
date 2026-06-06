@@ -66,9 +66,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 
 **安全**：控制面启用认证（etcd RBAC + Patroni REST basic auth + HAProxy stats auth），不启用 TLS，依赖网络隔离。
 
-**watchdog**：默认 `PG_HA_WATCHDOG=on`（softdog 防脑裂）。无 `/dev/watchdog` 的云主机会启动失败，需显式设 `PG_HA_WATCHDOG=off`（将关闭防脑裂兜底）。
+**watchdog**：默认 `PG_HA_WATCHDOG=auto`。脚本会区分云/虚拟服务器与独立物理服务器：云/虚拟服务器自动关闭 watchdog 并打印防脑裂风险告警；独立物理服务器默认启用 softdog。可用 `PG_HA_WATCHDOG=on/off` 强制覆盖，也可用 `PG_HA_SERVER_TYPE=cloud/dedicated` 覆盖服务器类型判断。
 
-**关键环境变量**：`PG_HA_NODE1_IP`/`2`/`3`、`PG_HA_MAJOR_VERSION`（默认 18）、`PG_HA_CLUSTER_NAME`（默认 pg-ha）、`PG_HA_SYNC_MODE`（默认 off；on 切零丢失同步复制）、`DATA_ROOT`（默认 /data）。
+**关键环境变量**：`PG_HA_NODE1_IP`/`2`/`3`、`PG_HA_MAJOR_VERSION`（默认 18）、`PG_HA_CLUSTER_NAME`（默认 pg-ha）、`PG_HA_SYNC_MODE`（默认 off；on 切零丢失同步复制）、`PG_HA_SERVER_TYPE`（默认 auto）、`PG_HA_WATCHDOG`（默认 auto）、`DATA_ROOT`（默认 /data）。
 
 > 这是**非 Docker** 路径，与现有 Docker 版 PostgreSQL（`deploy.sh` 菜单项 2）并存，互不影响。
 

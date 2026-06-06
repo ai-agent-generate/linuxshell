@@ -2,6 +2,7 @@
 # lib/pg-ha/main.sh — PG-HA 主编排入口
 
 pg_ha_show_summary() {
+  local watchdog_mode server_type
   print_step "PostgreSQL HA deployment summary"
   echo "Role: ${PG_HA_ROLE} (${PG_HA_NODE_NAME} @ ${PG_HA_NODE_IP})"
   echo "Cluster: ${PG_HA_CLUSTER_NAME} | etcd: ${PG_HA_NODE1_IP},${PG_HA_NODE2_IP},${PG_HA_NODE3_IP}"
@@ -9,9 +10,12 @@ pg_ha_show_summary() {
     echo "App connects to HAProxy :${PG_HA_PROXY_PORT} (read+write, always current primary)"
     echo "Configure your app with BOTH HAProxy addresses (${PG_HA_NODE1_IP}:${PG_HA_PROXY_PORT}, ${PG_HA_NODE2_IP}:${PG_HA_PROXY_PORT}) and connection-retry."
     echo "Verify: patronictl -c ${PG_HA_PATRONI_YAML} list"
-  fi
-  if [[ "$(to_lower "${PG_HA_WATCHDOG}")" == "off" ]]; then
-    echo "WARNING: watchdog disabled — split-brain protection is OFF (double-write risk on Patroni failure)."
+    watchdog_mode="$(pg_ha_resolve_watchdog)"
+    server_type="$(pg_ha_detect_server_type)"
+    echo "Watchdog: ${watchdog_mode} (setting: ${PG_HA_WATCHDOG}, server type: ${server_type})"
+    if [[ "$watchdog_mode" == "off" ]]; then
+      echo "WARNING: watchdog disabled — split-brain protection is OFF (double-write risk on Patroni failure)."
+    fi
   fi
   echo "Passwords must be identical across primary/replica. Store them securely."
 }
