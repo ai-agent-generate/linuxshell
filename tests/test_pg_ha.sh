@@ -68,11 +68,36 @@ run_config_tests() {
   )
 }
 
+run_skeleton_tests() {
+  local entry="${ROOT_DIR}/install-pg-ha.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected install-pg-ha.sh to be executable"
+  bash -n "$entry" || fail "install-pg-ha.sh has syntax errors"
+  assert_contains "$entry" "lib/pg-ha/main.sh"
+  assert_contains "$entry" "lib/common.sh"
+  assert_not_contains "$entry" "lib/config.sh"
+
+  local module
+  while IFS= read -r module; do
+    bash -n "$module" || fail "module has syntax errors: $module"
+  done < <(find "${ROOT_DIR}/lib/pg-ha" -name '*.sh' -type f | sort)
+
+  # 在子 shell 中加载模块并检查函数,避免污染上层 shell 的 PG_HA_* 变量
+  (
+    load_pg_ha
+    for fn in pg_ha_parse_role pg_ha_validate_node_ips write_etcd_config \
+              write_patroni_yaml write_haproxy_config pg_ha_main; do
+      assert_function_exists "$fn"
+    done
+  )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
     config) run_config_tests ;;
-    all) run_config_tests ;;
+    skeleton) run_skeleton_tests ;;
+    all) run_skeleton_tests; run_config_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
