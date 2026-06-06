@@ -249,6 +249,40 @@ run_mysqlchk_tests() {
   assert_function_exists start_mysqlchk
 }
 
+run_watcher_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export MYSQL_HA_NODE_IP="10.0.0.1" MYSQL_HA_CLUSTER_NAME="mysql-ha"
+  export MYSQL_HA_WATCHER_SCRIPT="${temp_root}/mysql-ha-watcher"
+  export MYSQL_HA_WATCHER_UNIT="${temp_root}/mysql-ha-watcher.service"
+  export MYSQL_HA_WATCHER_CNF="${temp_root}/watcher.cnf"
+  export MYSQL_HA_WATCHER_PASSWORD="watchpw" MYSQL_HA_ORCH_HTTP_PASSWORD="httppw"
+  load_mysql_ha
+
+  write_watcher_script
+  assert_file_exists "${MYSQL_HA_WATCHER_SCRIPT}"
+  # 三分支:失多数票自我隔离 / 本机是主→可写 / 别人是主→只读
+  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "super_read_only=ON"
+  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "read_only=OFF"
+  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "raft-health"
+  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "api/master"
+
+  write_watcher_cnf
+  assert_contains "${MYSQL_HA_WATCHER_CNF}" "user=watcher"
+  assert_contains "${MYSQL_HA_WATCHER_CNF}" "password=watchpw"
+  assert_contains "${MYSQL_HA_WATCHER_CNF}" "http_password = httppw"
+  assert_mode "${MYSQL_HA_WATCHER_CNF}" "600"
+
+  write_watcher_unit
+  assert_contains "${MYSQL_HA_WATCHER_UNIT}" "Restart=always"
+  assert_contains "${MYSQL_HA_WATCHER_UNIT}" "ExecStart=${temp_root}/mysql-ha-watcher"
+
+  assert_function_exists setup_watcher
+  assert_function_exists start_watcher
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -259,7 +293,8 @@ main() {
     mysqlcnf) run_mysql_cnf_tests ;;
     orchestrator) run_orchestrator_tests ;;
     mysqlchk) run_mysqlchk_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests ;;
+    watcher) run_watcher_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
