@@ -94,3 +94,26 @@ tags:
 EOF
   chmod 600 "${PG_HA_PATRONI_YAML}"
 }
+
+write_patroni_unit() {
+  mkdir -p "$(dirname "${PG_HA_PATRONI_UNIT}")"
+  cat >"${PG_HA_PATRONI_UNIT}" <<EOF
+[Unit]
+Description=Patroni PostgreSQL HA
+After=network-online.target etcd.service
+Wants=network-online.target etcd.service
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/usr/bin/patroni ${PG_HA_PATRONI_YAML}
+ExecReload=/bin/kill -s HUP \$MAINPID
+KillMode=process
+Restart=no
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}

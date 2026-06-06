@@ -965,7 +965,7 @@ write_patroni_unit() {
 [Unit]
 Description=Patroni PostgreSQL HA
 After=network-online.target etcd.service
-Wants=network-online.target
+Wants=network-online.target etcd.service
 
 [Service]
 Type=simple
@@ -975,7 +975,7 @@ ExecStart=/usr/bin/patroni ${PG_HA_PATRONI_YAML}
 ExecReload=/bin/kill -s HUP \$MAINPID
 KillMode=process
 Restart=no
-TimeoutSec=30
+TimeoutStartSec=900
 
 [Install]
 WantedBy=multi-user.target

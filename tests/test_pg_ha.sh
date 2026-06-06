@@ -210,6 +210,15 @@ run_patroni_tests() {
     export PG_HA_REPLICATION_PASSWORD=x PG_HA_REWIND_PASSWORD=x PG_HA_APP_ALLOWED_CIDR=10.0.0.0/24
     write_patroni_yaml "node1" "10.0.0.1"
     assert_contains "${temp_root}/patroni-sync.yml" "synchronous_mode: true" )
+
+  export PG_HA_PATRONI_UNIT="${temp_root}/patroni.service"
+  write_patroni_unit
+  assert_file_exists "${temp_root}/patroni.service"
+  assert_contains "${temp_root}/patroni.service" "After=network-online.target etcd.service"
+  assert_contains "${temp_root}/patroni.service" "User=postgres"
+  assert_contains "${temp_root}/patroni.service" "ExecStart=/usr/bin/patroni ${temp_root}/patroni.yml"
+  assert_contains "${temp_root}/patroni.service" "KillMode=process"
+  assert_contains "${temp_root}/patroni.service" "Restart=no"
 }
 
 run_skeleton_tests() {
