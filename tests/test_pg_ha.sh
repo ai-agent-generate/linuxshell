@@ -142,6 +142,76 @@ run_etcd_tests() {
   assert_function_exists etcd_health_check
 }
 
+run_patroni_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export PG_HA_NODE1_IP="10.0.0.1" PG_HA_NODE2_IP="10.0.0.2" PG_HA_NODE3_IP="10.0.0.3"
+  export PG_HA_PGDATA="${temp_root}/pgdata"
+  export PG_HA_PATRONI_YAML="${temp_root}/patroni.yml"
+  export PG_HA_ETCD_PASSWORD="etcdpw" PG_HA_REST_PASSWORD="restpw"
+  export PG_HA_SUPERUSER_PASSWORD="superpw" PG_HA_REPLICATION_PASSWORD="reppw" PG_HA_REWIND_PASSWORD="rewpw"
+  export PG_HA_APP_ALLOWED_CIDR="10.0.0.0/24"
+  export PG_HA_WATCHDOG="on" PG_HA_SYNC_MODE="off"
+  load_pg_ha
+
+  write_patroni_yaml "node1" "10.0.0.1"
+  assert_file_exists "${temp_root}/patroni.yml"
+  assert_contains "${temp_root}/patroni.yml" "scope: pg-ha"
+  assert_contains "${temp_root}/patroni.yml" "name: node1"
+  assert_contains "${temp_root}/patroni.yml" "listen: 10.0.0.1:8008"
+  assert_contains "${temp_root}/patroni.yml" "etcd3:"
+  assert_contains "${temp_root}/patroni.yml" "- 10.0.0.1:2379"
+  assert_contains "${temp_root}/patroni.yml" "username: patroni"
+  assert_contains "${temp_root}/patroni.yml" "password: etcdpw"
+  assert_contains "${temp_root}/patroni.yml" "ttl: 30"
+  assert_contains "${temp_root}/patroni.yml" "loop_wait: 10"
+  assert_contains "${temp_root}/patroni.yml" "retry_timeout: 10"
+  assert_contains "${temp_root}/patroni.yml" "maximum_lag_on_failover: 1048576"
+  assert_contains "${temp_root}/patroni.yml" "synchronous_mode: false"
+  assert_contains "${temp_root}/patroni.yml" "use_slots: true"
+  assert_contains "${temp_root}/patroni.yml" "use_pg_rewind: true"
+  assert_contains "${temp_root}/patroni.yml" "max_slot_wal_keep_size: 10GB"
+  assert_contains "${temp_root}/patroni.yml" "wal_log_hints:"
+  assert_contains "${temp_root}/patroni.yml" "data_dir: ${temp_root}/pgdata"
+  assert_contains "${temp_root}/patroni.yml" "bin_dir: /usr/lib/postgresql/18/bin"
+  assert_contains "${temp_root}/patroni.yml" "data-checksums"
+  assert_contains "${temp_root}/patroni.yml" "host all all 10.0.0.0/24 md5"
+  assert_contains "${temp_root}/patroni.yml" "mode: required"
+  assert_contains "${temp_root}/patroni.yml" "device: /dev/watchdog"
+  assert_contains "${temp_root}/patroni.yml" "username: postgres"
+  assert_contains "${temp_root}/patroni.yml" "username: replicator"
+  assert_contains "${temp_root}/patroni.yml" "username: rewind_user"
+  # DCS 时序硬约束断言(从生成文件解析)
+  local ttl lw rt
+  ttl="$(grep -E '^\s*ttl:' "${temp_root}/patroni.yml" | head -1 | grep -oE '[0-9]+')"
+  lw="$(grep -E '^\s*loop_wait:' "${temp_root}/patroni.yml" | head -1 | grep -oE '[0-9]+')"
+  rt="$(grep -E '^\s*retry_timeout:' "${temp_root}/patroni.yml" | head -1 | grep -oE '[0-9]+')"
+  [[ $(( lw + 2 * rt )) -le "$ttl" ]] || fail "generated yaml violates loop_wait+2*retry_timeout<=ttl"
+
+  # watchdog off 分支
+  ( export PG_HA_WATCHDOG="off" PG_HA_PATRONI_YAML="${temp_root}/patroni-off.yml"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/common.sh"; source "${ROOT_DIR}/lib/pg-ha/patroni.sh"
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    export PG_HA_ETCD_PASSWORD=x PG_HA_REST_PASSWORD=x PG_HA_SUPERUSER_PASSWORD=x
+    export PG_HA_REPLICATION_PASSWORD=x PG_HA_REWIND_PASSWORD=x PG_HA_APP_ALLOWED_CIDR=10.0.0.0/24
+    write_patroni_yaml "node1" "10.0.0.1"
+    assert_contains "${temp_root}/patroni-off.yml" 'mode: "off"'
+    assert_not_contains "${temp_root}/patroni-off.yml" "device: /dev/watchdog" )
+
+  # sync on 分支
+  ( export PG_HA_SYNC_MODE="on" PG_HA_PATRONI_YAML="${temp_root}/patroni-sync.yml"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/common.sh"; source "${ROOT_DIR}/lib/pg-ha/patroni.sh"
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    export PG_HA_ETCD_PASSWORD=x PG_HA_REST_PASSWORD=x PG_HA_SUPERUSER_PASSWORD=x
+    export PG_HA_REPLICATION_PASSWORD=x PG_HA_REWIND_PASSWORD=x PG_HA_APP_ALLOWED_CIDR=10.0.0.0/24
+    write_patroni_yaml "node1" "10.0.0.1"
+    assert_contains "${temp_root}/patroni-sync.yml" "synchronous_mode: true" )
+}
+
 run_skeleton_tests() {
   local entry="${ROOT_DIR}/install-pg-ha.sh"
   assert_file_exists "$entry"
@@ -174,7 +244,8 @@ main() {
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
     etcd) run_etcd_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests ;;
+    patroni) run_patroni_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

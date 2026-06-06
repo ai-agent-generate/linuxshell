@@ -792,7 +792,7 @@ run_patroni_tests() {
     export PG_HA_ETCD_PASSWORD=x PG_HA_REST_PASSWORD=x PG_HA_SUPERUSER_PASSWORD=x
     export PG_HA_REPLICATION_PASSWORD=x PG_HA_REWIND_PASSWORD=x PG_HA_APP_ALLOWED_CIDR=10.0.0.0/24
     write_patroni_yaml "node1" "10.0.0.1"
-    assert_contains "${temp_root}/patroni-off.yml" "mode: off"
+    assert_contains "${temp_root}/patroni-off.yml" 'mode: "off"'
     assert_not_contains "${temp_root}/patroni-off.yml" "device: /dev/watchdog" )
 
   # sync on 分支
@@ -834,7 +834,7 @@ write_patroni_yaml() {
   safety_margin: 5"
   else
     watchdog_block="watchdog:
-  mode: off"
+  mode: \"off\""
   fi
 
   mkdir -p "$(dirname "${PG_HA_PATRONI_YAML}")"
