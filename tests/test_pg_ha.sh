@@ -112,6 +112,31 @@ run_precheck_tests() {
   assert_function_exists pg_ha_check_time_sync
 }
 
+run_etcd_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export PG_HA_NODE1_IP="10.0.0.1" PG_HA_NODE2_IP="10.0.0.2" PG_HA_NODE3_IP="10.0.0.3"
+  export PG_HA_ETCD_DATA="${temp_root}/etcd"
+  export PG_HA_ETCD_CONFIG_FILE="${temp_root}/etcd.conf.yml"
+  export PG_HA_ETCD_UNIT_DROPIN="${temp_root}/dropin/override.conf"
+  load_pg_ha
+
+  write_etcd_config "node1" "10.0.0.1"
+  assert_file_exists "${temp_root}/etcd.conf.yml"
+  assert_contains "${temp_root}/etcd.conf.yml" "name: node1"
+  assert_contains "${temp_root}/etcd.conf.yml" "initial-cluster: node1=http://10.0.0.1:2380,node2=http://10.0.0.2:2380,node3=http://10.0.0.3:2380"
+  assert_contains "${temp_root}/etcd.conf.yml" "initial-cluster-state: new"
+  assert_contains "${temp_root}/etcd.conf.yml" "initial-cluster-token: pg-ha"
+  assert_contains "${temp_root}/etcd.conf.yml" "listen-client-urls: http://10.0.0.1:2379,http://127.0.0.1:2379"
+
+  write_etcd_unit_dropin
+  assert_file_exists "${temp_root}/dropin/override.conf"
+  assert_contains "${temp_root}/dropin/override.conf" "ExecStart="
+  assert_contains "${temp_root}/dropin/override.conf" "--config-file=${temp_root}/etcd.conf.yml"
+}
+
 run_skeleton_tests() {
   local entry="${ROOT_DIR}/install-pg-ha.sh"
   assert_file_exists "$entry"
@@ -143,7 +168,8 @@ main() {
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests ;;
+    etcd) run_etcd_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
