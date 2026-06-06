@@ -53,11 +53,35 @@ run_config_tests() {
   )
 }
 
+run_skeleton_tests() {
+  local entry="${ROOT_DIR}/install-mysql-ha.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected install-mysql-ha.sh to be executable"
+  bash -n "$entry" || fail "install-mysql-ha.sh has syntax errors"
+  assert_contains "$entry" "lib/mysql-ha/main.sh"
+  assert_contains "$entry" "lib/common.sh"
+  assert_not_contains "$entry" "lib/config.sh"
+
+  local module
+  while IFS= read -r module; do
+    bash -n "$module" || fail "module has syntax errors: $module"
+  done < <(find "${ROOT_DIR}/lib/mysql-ha" -name '*.sh' -type f | sort)
+
+  load_mysql_ha
+  local fn
+  for fn in mysql_ha_parse_role mysql_ha_validate_node_ips write_my_cnf \
+            write_orchestrator_config write_mysqlchk_script write_watcher_script \
+            write_haproxy_config mysql_ha_main; do
+    assert_function_exists "$fn"
+  done
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
     config) run_config_tests ;;
-    all) run_config_tests ;;
+    skeleton) run_skeleton_tests ;;
+    all) run_skeleton_tests; run_config_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
