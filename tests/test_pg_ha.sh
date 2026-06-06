@@ -227,6 +227,33 @@ run_patroni_tests() {
   assert_function_exists bootstrap_patroni
 }
 
+run_haproxy_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export PG_HA_NODE1_IP="10.0.0.1" PG_HA_NODE2_IP="10.0.0.2"
+  export PG_HA_HAPROXY_CFG="${temp_root}/haproxy.cfg"
+  export PG_HA_STATS_PASSWORD="statspw"
+  load_pg_ha
+
+  write_haproxy_config
+  assert_file_exists "${temp_root}/haproxy.cfg"
+  assert_contains "${temp_root}/haproxy.cfg" "bind *:5000"
+  assert_contains "${temp_root}/haproxy.cfg" "option httpchk"
+  assert_contains "${temp_root}/haproxy.cfg" "http-check send meth GET uri /primary"
+  assert_contains "${temp_root}/haproxy.cfg" "http-check expect status 200"
+  assert_contains "${temp_root}/haproxy.cfg" "on-marked-down shutdown-sessions"
+  assert_contains "${temp_root}/haproxy.cfg" "server node1 10.0.0.1:5432 check port 8008"
+  assert_contains "${temp_root}/haproxy.cfg" "server node2 10.0.0.2:5432 check port 8008"
+  assert_contains "${temp_root}/haproxy.cfg" "stats auth admin:statspw"
+  # 不应出现已弃用的老语法
+  assert_not_contains "${temp_root}/haproxy.cfg" "option httpchk GET /primary"
+
+  assert_function_exists install_haproxy
+  assert_function_exists start_haproxy
+}
+
 run_skeleton_tests() {
   local entry="${ROOT_DIR}/install-pg-ha.sh"
   assert_file_exists "$entry"
@@ -260,7 +287,8 @@ main() {
     precheck) run_precheck_tests ;;
     etcd) run_etcd_tests ;;
     patroni) run_patroni_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests ;;
+    haproxy) run_haproxy_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
