@@ -105,7 +105,7 @@ start_mysql() {
 
 # 私有:用 root 经本机 socket 执行 SQL(凭据走临时 600 defaults-file,不进 argv)
 _mysql_root_exec() {
-  local root_cnf
+  local root_cnf rc=0
   root_cnf="$(mktemp)"; chmod 600 "$root_cnf"
   cat >"$root_cnf" <<EOF
 [client]
@@ -113,8 +113,7 @@ user=root
 password=${MYSQL_HA_ROOT_PASSWORD}
 socket=${MYSQL_HA_MYSQL_SOCKET}
 EOF
-  mysql --defaults-extra-file="$root_cnf"
-  local rc=$?
+  mysql --defaults-extra-file="$root_cnf" || rc=$?
   rm -f "$root_cnf"
   return $rc
 }

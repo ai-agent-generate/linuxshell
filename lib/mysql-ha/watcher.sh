@@ -52,7 +52,6 @@ password=${MYSQL_HA_WATCHER_PASSWORD}
 socket=${MYSQL_HA_MYSQL_SOCKET}
 
 [orchestrator]
-http_user = admin
 http_password = ${MYSQL_HA_ORCH_HTTP_PASSWORD}
 EOF
   chmod 600 "${MYSQL_HA_WATCHER_CNF}"
