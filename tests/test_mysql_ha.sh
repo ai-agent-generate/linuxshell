@@ -310,6 +310,75 @@ run_haproxy_tests() {
   assert_function_exists start_haproxy
 }
 
+run_orchestration_tests() {
+  local temp_root action_log
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+  action_log="${temp_root}/actions.log"
+
+  export MYSQL_HA_NODE1_IP="10.0.0.1" MYSQL_HA_NODE2_IP="10.0.0.2" MYSQL_HA_NODE3_IP="10.0.0.3"
+  export MYSQL_HA_ORCH_PASSWORD=x MYSQL_HA_ORCH_HTTP_PASSWORD=x
+  export MYSQL_HA_ROOT_PASSWORD=x MYSQL_HA_REPL_PASSWORD=x MYSQL_HA_MYSQLCHK_PASSWORD=x
+  export MYSQL_HA_WATCHER_PASSWORD=x MYSQL_HA_APP_PASSWORD=x MYSQL_HA_STATS_PASSWORD=x
+  export MYSQL_HA_APP_ALLOWED_CIDR="10.0.0.0/24"
+  load_mysql_ha
+
+  # mock 所有副作用函数
+  require_root() { :; }
+  detect_os() { :; }
+  mysql_ha_check_time_sync() { :; }
+  mysql_ha_preflight_connectivity() { :; }
+  mysql_ha_wait_raft_quorum() { :; }
+  install_mysql() { echo install_mysql >>"$action_log"; }
+  relocate_datadir() { echo relocate_datadir >>"$action_log"; }
+  write_my_cnf() { echo "write_my_cnf $1 $2" >>"$action_log"; }
+  start_mysql() { echo start_mysql >>"$action_log"; }
+  bootstrap_mysql_accounts() { echo bootstrap_mysql_accounts >>"$action_log"; }
+  setup_replication() { echo setup_replication >>"$action_log"; }
+  install_orchestrator() { echo install_orchestrator >>"$action_log"; }
+  write_orchestrator_client_cnf() { echo write_orchestrator_client_cnf >>"$action_log"; }
+  write_orchestrator_config() { echo write_orchestrator_config >>"$action_log"; }
+  start_orchestrator() { echo start_orchestrator >>"$action_log"; }
+  orchestrator_discover() { echo orchestrator_discover >>"$action_log"; }
+  setup_mysqlchk() { echo setup_mysqlchk >>"$action_log"; }
+  start_mysqlchk() { echo start_mysqlchk >>"$action_log"; }
+  install_haproxy() { echo install_haproxy >>"$action_log"; }
+  start_haproxy() { echo start_haproxy >>"$action_log"; }
+  setup_watcher() { echo setup_watcher >>"$action_log"; }
+  start_watcher() { echo start_watcher >>"$action_log"; }
+  mysql_ha_show_summary() { echo summary >>"$action_log"; }
+
+  # arbiter:仅 orchestrator
+  : >"$action_log"
+  mysql_ha_collect_config() { MYSQL_HA_ROLE=arbiter; MYSQL_HA_NODE_NAME=node3; MYSQL_HA_NODE_IP=10.0.0.3; MYSQL_HA_SERVER_ID=0; }
+  mysql_ha_main
+  assert_contains "$action_log" "install_orchestrator"
+  assert_not_contains "$action_log" "install_mysql"
+  assert_not_contains "$action_log" "install_haproxy"
+  assert_not_contains "$action_log" "setup_watcher"
+
+  # primary:mysql + 建账号 + orchestrator + discover + mysqlchk + haproxy + watcher;不配复制
+  : >"$action_log"
+  mysql_ha_collect_config() { MYSQL_HA_ROLE=primary; MYSQL_HA_NODE_NAME=node1; MYSQL_HA_NODE_IP=10.0.0.1; MYSQL_HA_SERVER_ID=1; }
+  mysql_ha_main
+  assert_contains "$action_log" "install_mysql"
+  assert_contains "$action_log" "write_my_cnf 1 primary"
+  assert_contains "$action_log" "bootstrap_mysql_accounts"
+  assert_contains "$action_log" "orchestrator_discover"
+  assert_contains "$action_log" "setup_watcher"
+  assert_not_contains "$action_log" "setup_replication"
+
+  # replica:mysql + 配复制 + orchestrator + mysqlchk + haproxy + watcher;不建账号/不 discover
+  : >"$action_log"
+  mysql_ha_collect_config() { MYSQL_HA_ROLE=replica; MYSQL_HA_NODE_NAME=node2; MYSQL_HA_NODE_IP=10.0.0.2; MYSQL_HA_SERVER_ID=2; }
+  mysql_ha_main
+  assert_contains "$action_log" "write_my_cnf 2 replica"
+  assert_contains "$action_log" "setup_replication"
+  assert_contains "$action_log" "setup_watcher"
+  assert_not_contains "$action_log" "bootstrap_mysql_accounts"
+  assert_not_contains "$action_log" "orchestrator_discover"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -322,7 +391,8 @@ main() {
     mysqlchk) run_mysqlchk_tests ;;
     watcher) run_watcher_tests ;;
     haproxy) run_haproxy_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests; run_haproxy_tests ;;
+    orchestration) run_orchestration_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests; run_haproxy_tests; run_orchestration_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

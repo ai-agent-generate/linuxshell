@@ -1,2 +1,81 @@
 #!/usr/bin/env bash
-mysql_ha_main() { return 0; }
+# lib/mysql-ha/main.sh — MySQL-HA 主编排入口
+
+mysql_ha_show_summary() {
+  print_step "MySQL HA deployment summary"
+  echo "Role: ${MYSQL_HA_ROLE} (${MYSQL_HA_NODE_NAME} @ ${MYSQL_HA_NODE_IP})"
+  echo "Cluster: ${MYSQL_HA_CLUSTER_NAME} | orchestrator raft: ${MYSQL_HA_NODE1_IP},${MYSQL_HA_NODE2_IP},${MYSQL_HA_NODE3_IP}"
+  echo "Orchestrator Web/API: http://${MYSQL_HA_NODE_IP}:${MYSQL_HA_ORCH_PORT} (basic auth, user 'admin')"
+  if [[ "${MYSQL_HA_ROLE}" != "arbiter" ]]; then
+    echo "App connects to HAProxy :${MYSQL_HA_PROXY_PORT} (read+write, always current primary)"
+    echo "Configure your app with BOTH HAProxy addresses (${MYSQL_HA_NODE1_IP}:${MYSQL_HA_PROXY_PORT}, ${MYSQL_HA_NODE2_IP}:${MYSQL_HA_PROXY_PORT}) and connection-retry."
+    echo "Writability is maintained by mysql-ha-watcher; a node loses raft majority -> self-fences (super_read_only=ON)."
+    if [[ "$(to_lower "${MYSQL_HA_SEMISYNC}")" == "on" ]]; then
+      echo "Semi-sync: ON (near-zero RPO)."
+    else
+      echo "Semi-sync: OFF (async, RPO>0). Set MYSQL_HA_SEMISYNC=on for payment/strong-consistency workloads."
+    fi
+    echo "After a failover, a returning old primary likely needs full rebuild (errant GTID); re-add via orchestrator/reinstall before serving traffic."
+  fi
+  echo "Passwords must be identical across data nodes (orchestrator passwords across all nodes). Store them securely."
+}
+
+mysql_ha_main() {
+  require_root
+  detect_os
+  mysql_ha_collect_config
+  mysql_ha_validate_node_ips
+  mysql_ha_check_time_sync
+  mysql_ha_require_passwords
+  if [[ "${MYSQL_HA_ROLE}" != "arbiter" && -z "${MYSQL_HA_APP_ALLOWED_CIDR}" ]]; then
+    echo "MYSQL_HA_APP_ALLOWED_CIDR must be set for data nodes (e.g. 10.0.0.0/24)." >&2
+    return 1
+  fi
+
+  case "${MYSQL_HA_ROLE}" in
+    arbiter)
+      install_orchestrator
+      write_orchestrator_client_cnf
+      write_orchestrator_config "${MYSQL_HA_NODE_IP}"
+      start_orchestrator
+      ;;
+    primary)
+      install_mysql
+      relocate_datadir
+      write_my_cnf "1" "primary"
+      start_mysql
+      bootstrap_mysql_accounts
+      install_orchestrator
+      write_orchestrator_client_cnf
+      write_orchestrator_config "${MYSQL_HA_NODE_IP}"
+      start_orchestrator
+      mysql_ha_wait_raft_quorum
+      orchestrator_discover
+      setup_mysqlchk
+      start_mysqlchk
+      install_haproxy
+      start_haproxy
+      setup_watcher
+      start_watcher
+      ;;
+    replica)
+      install_mysql
+      relocate_datadir
+      write_my_cnf "2" "replica"
+      start_mysql
+      setup_replication
+      install_orchestrator
+      write_orchestrator_client_cnf
+      write_orchestrator_config "${MYSQL_HA_NODE_IP}"
+      start_orchestrator
+      setup_mysqlchk
+      start_mysqlchk
+      install_haproxy
+      start_haproxy
+      setup_watcher
+      start_watcher
+      ;;
+  esac
+
+  mysql_ha_show_summary
+}

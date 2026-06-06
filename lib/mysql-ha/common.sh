@@ -92,3 +92,41 @@ mysql_ha_wait_raft_quorum() {
   echo "Orchestrator raft not healthy. Ensure all three orchestrator nodes are up and ${MYSQL_HA_ORCH_PORT}/${MYSQL_HA_ORCH_RAFT_PORT} are reachable between nodes." >&2
   return 1
 }
+
+mysql_ha_collect_config() {
+  cat >&2 <<'GUIDE'
+
+=== MySQL 高可用部署 ===
+本脚本需在【每台机器各运行一次】,每次选择"本机"的角色(这是正常流程,不是重复)。
+推荐顺序: (1) 先 arbiter(仲裁) -> (2) 再 primary(主库) -> (3) 最后 replica(从库)
+三个节点 IP 与各项密码,必须在所有数据节点上填写【完全一致】。
+
+GUIDE
+  local role_input
+  role_input="$(prompt_with_default "Node role (1=primary, 2=replica, 3=arbiter)" "1")"
+  mysql_ha_parse_role "$role_input"
+
+  MYSQL_HA_NODE1_IP="$(prompt_with_default "Node1 (primary) IP" "${MYSQL_HA_NODE1_IP}")"
+  MYSQL_HA_NODE2_IP="$(prompt_with_default "Node2 (replica) IP" "${MYSQL_HA_NODE2_IP}")"
+  MYSQL_HA_NODE3_IP="$(prompt_with_default "Node3 (arbiter) IP" "${MYSQL_HA_NODE3_IP}")"
+
+  case "${MYSQL_HA_ROLE}" in
+    primary) MYSQL_HA_NODE_NAME="node1"; MYSQL_HA_NODE_IP="${MYSQL_HA_NODE1_IP}"; MYSQL_HA_SERVER_ID=1 ;;
+    replica) MYSQL_HA_NODE_NAME="node2"; MYSQL_HA_NODE_IP="${MYSQL_HA_NODE2_IP}"; MYSQL_HA_SERVER_ID=2 ;;
+    arbiter) MYSQL_HA_NODE_NAME="node3"; MYSQL_HA_NODE_IP="${MYSQL_HA_NODE3_IP}"; MYSQL_HA_SERVER_ID=0 ;;
+  esac
+
+  # orchestrator topology + Web 认证密码(三台一致;arbiter 也需连 MySQL 监控 + 提供 Web auth)
+  MYSQL_HA_ORCH_PASSWORD="$(prompt_with_default "orchestrator topology password (identical on ALL nodes)" "${MYSQL_HA_ORCH_PASSWORD}")"
+  MYSQL_HA_ORCH_HTTP_PASSWORD="$(prompt_with_default "orchestrator web/API password (identical on ALL nodes)" "${MYSQL_HA_ORCH_HTTP_PASSWORD:-$(mysql_ha_generate_password)}")"
+
+  if [[ "${MYSQL_HA_ROLE}" != "arbiter" ]]; then
+    MYSQL_HA_APP_ALLOWED_CIDR="$(prompt_with_default "Application allowed CIDR (e.g. 10.0.0.0/24)" "${MYSQL_HA_APP_ALLOWED_CIDR}")"
+    MYSQL_HA_ROOT_PASSWORD="$(prompt_with_default "MySQL root password (identical on data nodes)" "${MYSQL_HA_ROOT_PASSWORD}")"
+    MYSQL_HA_REPL_PASSWORD="$(prompt_with_default "replication password (identical on data nodes)" "${MYSQL_HA_REPL_PASSWORD}")"
+    MYSQL_HA_MYSQLCHK_PASSWORD="$(prompt_with_default "mysqlchk password (identical on data nodes)" "${MYSQL_HA_MYSQLCHK_PASSWORD:-$(mysql_ha_generate_password)}")"
+    MYSQL_HA_WATCHER_PASSWORD="$(prompt_with_default "watcher password (identical on data nodes)" "${MYSQL_HA_WATCHER_PASSWORD:-$(mysql_ha_generate_password)}")"
+    MYSQL_HA_APP_PASSWORD="$(prompt_with_default "application '${MYSQL_HA_APP_USER}' password (identical on data nodes)" "${MYSQL_HA_APP_PASSWORD}")"
+    MYSQL_HA_STATS_PASSWORD="$(prompt_with_default "HAProxy stats password" "${MYSQL_HA_STATS_PASSWORD:-$(mysql_ha_generate_password)}")"
+  fi
+}
