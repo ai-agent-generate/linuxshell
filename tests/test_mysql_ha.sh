@@ -162,6 +162,14 @@ run_mysql_cnf_tests() {
     write_my_cnf "2" "replica"
     assert_contains "${temp_root}/semi-rep.cnf" "plugin_load_add=semisync_replica.so"
     assert_contains "${temp_root}/semi-rep.cnf" "rpl_semi_sync_replica_enabled=1" )
+
+  assert_function_exists add_mysql_repo
+  assert_function_exists install_mysql
+  assert_function_exists apply_apparmor_datadir
+  assert_function_exists relocate_datadir
+  assert_function_exists start_mysql
+  assert_function_exists bootstrap_mysql_accounts
+  assert_function_exists setup_replication
 }
 
 main() {
