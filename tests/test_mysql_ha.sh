@@ -76,12 +76,41 @@ run_skeleton_tests() {
   done
 }
 
+run_common_tests() {
+  load_mysql_ha
+
+  mysql_ha_parse_role "1"; assert_equals "primary" "${MYSQL_HA_ROLE}"
+  mysql_ha_parse_role "primary"; assert_equals "primary" "${MYSQL_HA_ROLE}"
+  mysql_ha_parse_role "2"; assert_equals "replica" "${MYSQL_HA_ROLE}"
+  mysql_ha_parse_role "replica"; assert_equals "replica" "${MYSQL_HA_ROLE}"
+  mysql_ha_parse_role "3"; assert_equals "arbiter" "${MYSQL_HA_ROLE}"
+  mysql_ha_parse_role "arbiter"; assert_equals "arbiter" "${MYSQL_HA_ROLE}"
+  if mysql_ha_parse_role "bogus" 2>/dev/null; then fail "expected bogus role to fail"; fi
+
+  ( export MYSQL_HA_NODE1_IP="10.0.0.1" MYSQL_HA_NODE2_IP="10.0.0.2" MYSQL_HA_NODE3_IP="10.0.0.3"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"
+    mysql_ha_validate_node_ips || fail "expected valid IPs to pass" )
+  ( export MYSQL_HA_NODE1_IP="10.0.0.1" MYSQL_HA_NODE2_IP="" MYSQL_HA_NODE3_IP="10.0.0.3"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"
+    if mysql_ha_validate_node_ips 2>/dev/null; then fail "expected empty IP to fail"; fi )
+  ( export MYSQL_HA_NODE1_IP="not-an-ip" MYSQL_HA_NODE2_IP="10.0.0.2" MYSQL_HA_NODE3_IP="10.0.0.3"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"
+    if mysql_ha_validate_node_ips 2>/dev/null; then fail "expected invalid IP to fail"; fi )
+
+  local pw
+  pw="$(mysql_ha_generate_password)"
+  [[ ${#pw} -ge 16 ]] || fail "expected generated password length >= 16"
+  # 密码仅字母数字(避免 JSON/SQL/cnf 转义)
+  [[ "$pw" =~ ^[A-Za-z0-9]+$ ]] || fail "generated password must be alphanumeric only: $pw"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
-    all) run_skeleton_tests; run_config_tests ;;
+    common) run_common_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
