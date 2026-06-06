@@ -72,6 +72,43 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 
 > 这是**非 Docker** 路径，与现有 Docker 版 PostgreSQL（`deploy.sh` 菜单项 2）并存，互不影响。
 
+## MySQL 高可用（Orchestrator，非 Docker）
+
+在三台 Ubuntu 24.04 机器上部署 Oracle MySQL 8.4 + Orchestrator + HAProxy，实现两主机自动故障转移（第三台仅作 orchestrator raft 仲裁）。
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/install-mysql-ha.sh)
+```
+
+**在每台机器各运行一次**，交互选择本机角色：
+
+| 角色 | 说明 |
+|------|------|
+| 1) primary | MySQL 主节点（首次建库/账号，配置为复制源） |
+| 2) replica | MySQL 从节点（GTID 自动复制） |
+| 3) arbiter | 仅 Orchestrator raft 仲裁（不跑 MySQL） |
+
+**推荐执行顺序**：arbiter → primary → replica。
+
+**自愈与防脑裂**：每个数据节点跑 `mysql-ha-watcher`——本机被 Orchestrator 判定为当前主且 raft 健康时维持其可写；失去 raft 多数票（网络分区）时自我 `super_read_only=ON` 隔离。这补足了 Orchestrator 不维护稳态可写性的缺口（否则节点重启后会"无可写主"）。⚠️ watcher 为用户态、有界窗口、依赖自身存活（`Restart=always`），非内核硬 STONITH；强一致场景建议 `MYSQL_HA_SEMISYNC=on`。
+
+**应用连接**：连 HAProxy `6446`（读写都到当前主库）。为接入冗余，应用应配置**两台** HAProxy 地址（`node1:6446`、`node2:6446`）并具备连接失败重试能力。**分区期间**被隔离节点的 HAProxy 会因 mysqlchk 转 503 而 DOWN，正常重连客户端会切到另一地址。
+
+**需放行端口**（脚本不改防火墙）：
+- 节点间互通：`3306`（复制/HAProxy/orchestrator 监控）、`9200`（mysqlchk 跨机检查）、`3000`（orchestrator API）、`10008`（raft）
+- 应用接入：`6446`（HAProxy）
+- 仅本机/运维：`7001`（HAProxy stats，不建议全网放行）
+
+**密码**：`MYSQL_HA_ROOT_PASSWORD`/`MYSQL_HA_REPL_PASSWORD`/`MYSQL_HA_MYSQLCHK_PASSWORD`/`MYSQL_HA_WATCHER_PASSWORD`/`MYSQL_HA_APP_PASSWORD` **必须在两台数据节点保持一致**；`MYSQL_HA_ORCH_PASSWORD`/`MYSQL_HA_ORCH_HTTP_PASSWORD` 三台一致。账号仅在 primary 创建，经 GTID 复制到 replica。
+
+**安全**：Orchestrator Web/API（3000）启用 basic auth + 绑业务网卡；账号最小权限；不启用 TLS，依赖网络隔离。
+
+**故障恢复**：旧主 failover 回归大概率带 errant GTID，需经 Orchestrator 重新纳管或重装全量重建后再放行流量（异步复制特性；`MYSQL_HA_SEMISYNC=on` 可降低概率）。
+
+**关键环境变量**：`MYSQL_HA_NODE1_IP`/`2`/`3`、`MYSQL_HA_VERSION`（默认 8.4）、`MYSQL_HA_CLUSTER_NAME`（默认 mysql-ha）、`MYSQL_HA_SEMISYNC`（默认 off；on 切半同步逼近零丢失）、`DATA_ROOT`（默认 /data）。
+
+> 这是**非 Docker** 路径，与现有 Docker 版 MySQL（`deploy.sh` 菜单项 3）**并存但同机不可并跑**（均占 3306 / server_id 易撞）。
+
 ## 快捷使用 psql
 
 部署 PostgreSQL 时会自动安装 `pg` 命令（`/usr/local/bin/pg`），等价于 `docker exec -it postgres psql -U <user>`：
@@ -106,7 +143,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 ├── postgres/        # PostgreSQL 数据（PG 18 格式：postgres/18/main）
 ├── mysql/           # MySQL 数据与配置
 ├── rabbitmq/        # RabbitMQ 数据与配置
-└── redis/           # Redis 数据
+├── redis/           # Redis 数据
+└── mysql-ha/        # MySQL HA 数据与 orchestrator 状态
 ```
 
 可通过环境变量覆盖数据目录：
