@@ -119,6 +119,51 @@ run_precheck_tests() {
     mysql_ha_wait_raft_quorum || fail "expected raft quorum wait to succeed when healthy" )
 }
 
+run_mysql_cnf_tests() {
+  local temp_root
+  temp_root="$(mktemp -d)"
+  trap "rm -rf '$temp_root'" RETURN
+
+  export MYSQL_HA_NODE_IP="10.0.0.1"
+  export MYSQL_HA_DATADIR="${temp_root}/data"
+  export MYSQL_HA_MYCNF="${temp_root}/zz-mysql-ha.cnf"
+  export MYSQL_HA_SEMISYNC="off"
+  load_mysql_ha
+
+  # primary, 异步
+  write_my_cnf "1" "primary"
+  assert_file_exists "${MYSQL_HA_MYCNF}"
+  assert_contains "${MYSQL_HA_MYCNF}" "server_id=1"
+  assert_contains "${MYSQL_HA_MYCNF}" "gtid_mode=ON"
+  assert_contains "${MYSQL_HA_MYCNF}" "enforce_gtid_consistency=ON"
+  assert_contains "${MYSQL_HA_MYCNF}" "log_replica_updates=ON"
+  assert_contains "${MYSQL_HA_MYCNF}" "super_read_only=ON"
+  assert_contains "${MYSQL_HA_MYCNF}" "binlog_expire_logs_seconds=604800"
+  assert_contains "${MYSQL_HA_MYCNF}" "datadir=${temp_root}/data"
+  assert_contains "${MYSQL_HA_MYCNF}" "bind-address=10.0.0.1"
+  assert_not_contains "${MYSQL_HA_MYCNF}" "rpl_semi_sync"
+  assert_mode "${MYSQL_HA_MYCNF}" "644"
+
+  # replica server_id=2
+  write_my_cnf "2" "replica"
+  assert_contains "${MYSQL_HA_MYCNF}" "server_id=2"
+
+  # 半同步 on + primary
+  ( export MYSQL_HA_SEMISYNC="on" MYSQL_HA_MYCNF="${temp_root}/semi-src.cnf" MYSQL_HA_NODE_IP=10.0.0.1
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
+    write_my_cnf "1" "primary"
+    assert_contains "${temp_root}/semi-src.cnf" "plugin_load_add=semisync_source.so"
+    assert_contains "${temp_root}/semi-src.cnf" "rpl_semi_sync_source_enabled=1"
+    assert_contains "${temp_root}/semi-src.cnf" "rpl_semi_sync_source_wait_for_replica_count=1" )
+
+  # 半同步 on + replica
+  ( export MYSQL_HA_SEMISYNC="on" MYSQL_HA_MYCNF="${temp_root}/semi-rep.cnf" MYSQL_HA_NODE_IP=10.0.0.2
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
+    write_my_cnf "2" "replica"
+    assert_contains "${temp_root}/semi-rep.cnf" "plugin_load_add=semisync_replica.so"
+    assert_contains "${temp_root}/semi-rep.cnf" "rpl_semi_sync_replica_enabled=1" )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -126,7 +171,8 @@ main() {
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests ;;
+    mysqlcnf) run_mysql_cnf_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
