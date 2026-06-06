@@ -40,6 +40,38 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 
 选择 Caddy 或任意容器服务时，脚本会自动确保 Docker 与 Docker Compose plugin 已安装；不需要额外选择 Docker only。
 
+## PostgreSQL 高可用（Patroni，非 Docker）
+
+在三台 Ubuntu 24.04 机器上部署 PostgreSQL 18 + Patroni + etcd + HAProxy，实现两主机自动故障转移（第三台仅作 etcd 仲裁）。
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/install-pg-ha.sh)
+```
+
+**在每台机器各运行一次**，交互选择本机角色：
+
+| 角色 | 说明 |
+|------|------|
+| 1) primary | PG 主节点（首次初始化集群） |
+| 2) replica | PG 从节点（自动克隆） |
+| 3) etcd-quorum | 仅 etcd 仲裁（不跑 PG） |
+
+**推荐执行顺序**：三台先各自起 etcd → 再 primary → 最后 replica。
+
+**应用连接**：连 HAProxy `5000`（读写都到当前主库）。为接入冗余，应用应配置**两台** HAProxy 地址（`node1:5000`、`node2:5000`）并具备连接失败重试能力。
+
+**需放行端口**（脚本不改防火墙）：节点间 `2379`/`2380`（etcd）、`8008`（Patroni REST，HAProxy 跨机健康检查）、`5432`（PG/复制）、`5000`/`7000`（HAProxy）。
+
+**密码**：`PG_HA_ETCD_PASSWORD`/`PG_HA_REST_PASSWORD`/`PG_HA_SUPERUSER_PASSWORD`/`PG_HA_REPLICATION_PASSWORD`/`PG_HA_REWIND_PASSWORD` **必须在 primary/replica 两台保持一致**（经环境变量或交互提供）。
+
+**安全**：控制面启用认证（etcd RBAC + Patroni REST basic auth + HAProxy stats auth），不启用 TLS，依赖网络隔离。
+
+**watchdog**：默认 `PG_HA_WATCHDOG=on`（softdog 防脑裂）。无 `/dev/watchdog` 的云主机会启动失败，需显式设 `PG_HA_WATCHDOG=off`（将关闭防脑裂兜底）。
+
+**关键环境变量**：`PG_HA_NODE1_IP`/`2`/`3`、`PG_HA_MAJOR_VERSION`（默认 18）、`PG_HA_CLUSTER_NAME`（默认 pg-ha）、`PG_HA_SYNC_MODE`（默认 off；on 切零丢失同步复制）、`DATA_ROOT`（默认 /data）。
+
+> 这是**非 Docker** 路径，与现有 Docker 版 PostgreSQL（`deploy.sh` 菜单项 2）并存，互不影响。
+
 ## 快捷使用 psql
 
 部署 PostgreSQL 时会自动安装 `pg` 命令（`/usr/local/bin/pg`），等价于 `docker exec -it postgres psql -U <user>`：

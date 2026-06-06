@@ -312,6 +312,13 @@ run_orchestration_tests() {
   assert_contains "$action_log" "install_haproxy"
 }
 
+run_docs_tests() {
+  local readme="${ROOT_DIR}/README.md"
+  assert_contains "$readme" "install-pg-ha.sh"
+  assert_contains "$readme" "Patroni"
+  assert_contains "$readme" "PG_HA_NODE1_IP"
+}
+
 run_skeleton_tests() {
   local entry="${ROOT_DIR}/install-pg-ha.sh"
   assert_file_exists "$entry"
@@ -347,7 +354,8 @@ main() {
     patroni) run_patroni_tests ;;
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests ;;
+    docs) run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
