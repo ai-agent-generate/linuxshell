@@ -36,6 +36,7 @@ listen stats
     stats uri /
     stats auth admin:${PG_HA_STATS_PASSWORD}
 EOF
+  chmod 600 "${PG_HA_HAPROXY_CFG}"
 }
 
 install_haproxy() {

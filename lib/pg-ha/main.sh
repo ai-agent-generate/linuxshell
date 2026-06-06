@@ -23,6 +23,14 @@ pg_ha_main() {
   pg_ha_validate_node_ips
   pg_ha_check_time_sync
 
+  if [[ "${PG_HA_ROLE}" != "quorum" ]]; then
+    pg_ha_require_passwords
+    if [[ -z "${PG_HA_APP_ALLOWED_CIDR}" ]]; then
+      echo "PG_HA_APP_ALLOWED_CIDR must be set for PG nodes (e.g. 10.0.0.0/24)." >&2
+      return 1
+    fi
+  fi
+
   case "${PG_HA_ROLE}" in
     quorum)
       install_etcd
@@ -30,10 +38,12 @@ pg_ha_main() {
       start_etcd
       ;;
     primary)
+      pg_ha_setup_watchdog
       pg_ha_check_watchdog
       install_etcd
       write_etcd_config "${PG_HA_NODE_NAME}" "${PG_HA_NODE_IP}"
       start_etcd
+      pg_ha_preflight_connectivity
       install_postgres_patroni
       disable_default_cluster
       write_patroni_yaml "${PG_HA_NODE_NAME}" "${PG_HA_NODE_IP}"
@@ -42,10 +52,12 @@ pg_ha_main() {
       start_haproxy
       ;;
     replica)
+      pg_ha_setup_watchdog
       pg_ha_check_watchdog
       install_etcd
       write_etcd_config "${PG_HA_NODE_NAME}" "${PG_HA_NODE_IP}"
       start_etcd
+      pg_ha_preflight_connectivity
       install_postgres_patroni
       disable_default_cluster
       write_patroni_yaml "${PG_HA_NODE_NAME}" "${PG_HA_NODE_IP}"

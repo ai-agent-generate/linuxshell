@@ -1529,3 +1529,25 @@ git commit -m "test(pg-ha): full suite green; existing tests unaffected" || echo
 **3. 类型/命名一致性** — 函数名跨任务一致:`write_etcd_config`/`write_patroni_yaml`/`write_haproxy_config`/`write_etcd_unit_dropin`/`write_patroni_unit`/`pg_ha_main`/`pg_ha_collect_config`/`pg_ha_show_summary`/`enable_etcd_rbac`/`bootstrap_patroni`/`start_patroni`。全局变量名与 config.sh 一致。
 
 **范围说明(对 spec 的有意收窄):** 本计划聚焦"首次三角色部署 + 配置生成正确性"。spec 中的 **reinstall 两类路径(PG 层 vs etcd 成员级)、复制槽清理、pg_rewind fallback** 涉及运行期状态,无法用配置生成测试覆盖,且体量大;建议作为**第二个计划**(`2026-06-06-postgres-patroni-ha-reinstall.md`)单独实现,保持本计划可独立交付、可测试。自动 failover / 单主路由的运行期正确性,依赖 spec"成功标准"里的手工/集成验收(本计划的单元测试只保证配置正确)。
+
+## Task 14: 修复 final review 集成缺口
+
+**背景:** code review 发现已实现的安全/预检函数没接入编排,且 watchdog 落地缺失。以下修复均已落地。
+
+| # | 修复点 | 涉及文件 | 改动 |
+|---|-------|----------|------|
+| Fix 1 | watchdog 落地(Critical) | `lib/pg-ha/common.sh` | 新增 `pg_ha_setup_watchdog()`:加载 softdog 内核模块、写 udev 规则授权 postgres 访问 `/dev/watchdog` |
+| Fix 1 续 | watchdog 接入编排 | `lib/pg-ha/main.sh` | primary/replica 分支:在 `pg_ha_check_watchdog` 前新增 `pg_ha_setup_watchdog` 调用 |
+| Fix 2 | 接入密码强校验(Important) | `lib/pg-ha/main.sh` | case 前对非 quorum 角色调用 `pg_ha_require_passwords()` |
+| Fix 3 | APP_ALLOWED_CIDR 非空校验(Important) | `lib/pg-ha/main.sh` | 同 Fix 2 的 if 块内:空 CIDR 直接 return 1(否则会生成非法 pg_hba 行) |
+| Fix 4 | haproxy.cfg chmod 600(Important) | `lib/pg-ha/haproxy.sh` | `write_haproxy_config` heredoc 后加 `chmod 600 "${PG_HA_HAPROXY_CFG}"` |
+| Fix 5 | 接入跨节点连通性预检(Important) | `lib/pg-ha/common.sh` | 新增 `pg_ha_preflight_connectivity()`:循环三节点检查 etcd client port |
+| Fix 5 续 | 连通性预检接入编排 | `lib/pg-ha/main.sh` | primary/replica 分支:`start_etcd` 之后、引导前调用 `pg_ha_preflight_connectivity` |
+| Minor A | etcd.conf.yml chmod 600 | `lib/pg-ha/etcd.sh` | `write_etcd_config` heredoc 后加 `chmod 600 "${PG_HA_ETCD_CONFIG_FILE}"` |
+| Minor B | `disable_default_cluster` 去掉 `-R` | `lib/pg-ha/patroni.sh` | `chown postgres:postgres "${PG_HA_PGDATA}"` (PGDATA 新建空目录,非递归) |
+
+**测试同步(`tests/test_pg_ha.sh`):**
+- `run_common_tests`:断言 `pg_ha_setup_watchdog`/`pg_ha_preflight_connectivity` 存在
+- `run_etcd_tests`:断言 `etcd.conf.yml` 权限 600(跨平台 stat)
+- `run_haproxy_tests`:断言 `haproxy.cfg` 权限 600
+- `run_orchestration_tests`:mock `pg_ha_setup_watchdog`/`pg_ha_preflight_connectivity`/`pg_ha_require_passwords`,设置 `PG_HA_APP_ALLOWED_CIDR`(非空);primary/replica 断言 `pg_ha_setup_watchdog`/`pg_ha_preflight_connectivity` 已调用;quorum 路径不触发 require_passwords/CIDR 校验

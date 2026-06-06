@@ -92,6 +92,9 @@ run_common_tests() {
   local pw
   pw="$(pg_ha_generate_password)"
   [[ ${#pw} -ge 16 ]] || fail "expected generated password length >= 16"
+
+  assert_function_exists pg_ha_setup_watchdog
+  assert_function_exists pg_ha_preflight_connectivity
 }
 
 run_precheck_tests() {
@@ -130,6 +133,10 @@ run_etcd_tests() {
   assert_contains "${temp_root}/etcd.conf.yml" "initial-cluster-state: new"
   assert_contains "${temp_root}/etcd.conf.yml" "initial-cluster-token: pg-ha"
   assert_contains "${temp_root}/etcd.conf.yml" "listen-client-urls: http://10.0.0.1:2379,http://127.0.0.1:2379"
+
+  local perm
+  perm="$(stat -c '%a' "${temp_root}/etcd.conf.yml" 2>/dev/null || stat -f '%Lp' "${temp_root}/etcd.conf.yml")"
+  assert_equals "600" "$perm"
 
   write_etcd_unit_dropin
   assert_file_exists "${temp_root}/dropin/override.conf"
@@ -247,6 +254,9 @@ run_haproxy_tests() {
   assert_contains "${temp_root}/haproxy.cfg" "server node1 10.0.0.1:5432 check port 8008"
   assert_contains "${temp_root}/haproxy.cfg" "server node2 10.0.0.2:5432 check port 8008"
   assert_contains "${temp_root}/haproxy.cfg" "stats auth admin:statspw"
+  local perm
+  perm="$(stat -c '%a' "${temp_root}/haproxy.cfg" 2>/dev/null || stat -f '%Lp' "${temp_root}/haproxy.cfg")"
+  assert_equals "600" "$perm"
   # 不应出现已弃用的老语法
   assert_not_contains "${temp_root}/haproxy.cfg" "option httpchk GET /primary"
 
@@ -284,6 +294,9 @@ run_orchestration_tests() {
   pg_ha_check_watchdog() { :; }
   pg_ha_check_time_sync() { :; }
   pg_ha_show_summary() { echo summary >>"$action_log"; }
+  pg_ha_setup_watchdog() { echo pg_ha_setup_watchdog >>"$action_log"; }
+  pg_ha_preflight_connectivity() { echo pg_ha_preflight_connectivity >>"$action_log"; }
+  pg_ha_require_passwords() { :; }
 
   # quorum 角色:只装 etcd,不碰 patroni/haproxy
   : >"$action_log"
@@ -301,6 +314,8 @@ run_orchestration_tests() {
   assert_contains "$action_log" "install_postgres_patroni"
   assert_contains "$action_log" "bootstrap_patroni"
   assert_contains "$action_log" "install_haproxy"
+  assert_contains "$action_log" "pg_ha_setup_watchdog"
+  assert_contains "$action_log" "pg_ha_preflight_connectivity"
 
   # replica 角色:etcd + patroni(start,非 bootstrap) + haproxy
   : >"$action_log"
@@ -310,6 +325,8 @@ run_orchestration_tests() {
   assert_contains "$action_log" "start_patroni"
   assert_not_contains "$action_log" "bootstrap_patroni"
   assert_contains "$action_log" "install_haproxy"
+  assert_contains "$action_log" "pg_ha_setup_watchdog"
+  assert_contains "$action_log" "pg_ha_preflight_connectivity"
 }
 
 run_docs_tests() {

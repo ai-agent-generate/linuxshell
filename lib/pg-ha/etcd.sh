@@ -16,6 +16,7 @@ initial-cluster: node1=http://${PG_HA_NODE1_IP}:${PG_HA_ETCD_PEER_PORT},node2=ht
 initial-cluster-state: new
 initial-cluster-token: ${PG_HA_CLUSTER_NAME}
 EOF
+  chmod 600 "${PG_HA_ETCD_CONFIG_FILE}"
 }
 
 write_etcd_unit_dropin() {

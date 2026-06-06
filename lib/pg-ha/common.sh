@@ -72,6 +72,31 @@ pg_ha_check_connectivity() {
   fi
 }
 
+pg_ha_setup_watchdog() {
+  [[ "$(to_lower "${PG_HA_WATCHDOG}")" == "on" ]] || return 0
+  echo "softdog" >/etc/modules-load.d/softdog.conf
+  modprobe softdog 2>/dev/null || true
+  cat >/etc/udev/rules.d/99-watchdog.rules <<'RULES'
+KERNEL=="watchdog", OWNER="postgres", GROUP="postgres", MODE="0600"
+RULES
+  udevadm control --reload 2>/dev/null || true
+  udevadm trigger 2>/dev/null || true
+  if [[ -e /dev/watchdog ]]; then
+    chown postgres:postgres /dev/watchdog 2>/dev/null || true
+  fi
+}
+
+pg_ha_preflight_connectivity() {
+  local node_ip
+  for node_ip in "${PG_HA_NODE1_IP}" "${PG_HA_NODE2_IP}" "${PG_HA_NODE3_IP}"; do
+    if ! pg_ha_check_connectivity "$node_ip" "${PG_HA_ETCD_CLIENT_PORT}"; then
+      echo "Cannot reach etcd client port ${PG_HA_ETCD_CLIENT_PORT} on ${node_ip}." >&2
+      echo "Ensure etcd is up there and ${PG_HA_ETCD_CLIENT_PORT}/${PG_HA_ETCD_PEER_PORT} are open between nodes." >&2
+      return 1
+    fi
+  done
+}
+
 pg_ha_check_time_sync() {
   if command_exists timedatectl; then
     if ! timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q '^yes$'; then
