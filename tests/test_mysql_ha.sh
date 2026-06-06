@@ -310,6 +310,14 @@ run_haproxy_tests() {
   assert_function_exists start_haproxy
 }
 
+run_docs_tests() {
+  local readme="${ROOT_DIR}/README.md"
+  assert_contains "$readme" "install-mysql-ha.sh"
+  assert_contains "$readme" "Orchestrator"
+  assert_contains "$readme" "MYSQL_HA_NODE1_IP"
+  assert_contains "$readme" "mysql-ha-watcher"
+}
+
 run_orchestration_tests() {
   local temp_root action_log
   temp_root="$(mktemp -d)"
@@ -392,7 +400,8 @@ main() {
     watcher) run_watcher_tests ;;
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests; run_haproxy_tests; run_orchestration_tests ;;
+    docs) run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
