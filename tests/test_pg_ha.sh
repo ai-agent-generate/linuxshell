@@ -698,6 +698,22 @@ run_pg_status_tests() {
   assert_function_exists pg_ha_status_config_audit
 }
 
+run_status_skeleton_tests() {
+  local entry="${ROOT_DIR}/status-pg-ha.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected status-pg-ha.sh to be executable"
+  bash -n "$entry" || fail "status-pg-ha.sh has syntax errors"
+  # 远程下载列表必须含新模块
+  assert_contains "$entry" "lib/common.sh"
+  assert_contains "$entry" "lib/status-common.sh"
+  assert_contains "$entry" "lib/pg-ha/status.sh"
+  assert_contains "$entry" "pg_ha_status_main"
+  assert_contains "$entry" "require_root"
+  # status 模块语法
+  bash -n "${ROOT_DIR}/lib/status-common.sh" || fail "status-common.sh syntax error"
+  bash -n "${ROOT_DIR}/lib/pg-ha/status.sh" || fail "pg-ha/status.sh syntax error"
+}
+
 run_docs_tests() {
   local readme="${ROOT_DIR}/README.md"
   assert_contains "$readme" "install-pg-ha.sh"
@@ -735,6 +751,7 @@ main() {
     status_common) run_status_common_tests ;;
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
+    status_skeleton) run_status_skeleton_tests ;;
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
     etcd) run_etcd_tests ;;
@@ -743,7 +760,7 @@ main() {
     orchestration) run_orchestration_tests ;;
     pg_status) run_pg_status_tests ;;
     docs) run_docs_tests ;;
-    all) run_status_common_tests; run_skeleton_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_status_common_tests; run_skeleton_tests; run_status_skeleton_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
