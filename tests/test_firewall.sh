@@ -382,6 +382,7 @@ run_trust_validate_tests() {
   if fw_validate_trust_ip any 2>/dev/null; then fail "any should fail"; fi
   if fw_validate_trust_ip 10.0.0.0/24 2>/dev/null; then fail "ipv4 cidr should fail"; fi
   if fw_validate_trust_ip "2001:db8::/32" 2>/dev/null; then fail "ipv6 cidr should fail"; fi
+  if fw_validate_trust_ip "::/0" 2>/dev/null; then fail "ipv6 default route cidr should fail"; fi
   if fw_validate_trust_ip garbage 2>/dev/null; then fail "garbage should fail"; fi
 
   # fw_trust_ips 只读 trust 行
