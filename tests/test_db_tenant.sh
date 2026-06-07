@@ -64,12 +64,43 @@ run_config_tests() {
     assert_equals "99" "${DB_TENANT_PG_CONN_LIMIT}" )
 }
 
+run_common_tests() {
+  load_db_tenant
+  assert_function_exists db_tenant_validate_identifier
+  assert_function_exists db_tenant_is_system_name
+  assert_function_exists db_tenant_generate_password
+  assert_function_exists db_tenant_sql_escape_literal
+
+  db_tenant_validate_identifier "acme" || fail "acme should be valid"
+  db_tenant_validate_identifier "acme_1" || fail "acme_1 should be valid"
+  if db_tenant_validate_identifier "1abc" 2>/dev/null; then fail "1abc must be rejected"; fi
+  if db_tenant_validate_identifier "a-b" 2>/dev/null; then fail "a-b must be rejected"; fi
+  if db_tenant_validate_identifier "a;b" 2>/dev/null; then fail "a;b must be rejected"; fi
+  if db_tenant_validate_identifier "a'b" 2>/dev/null; then fail "quote must be rejected"; fi
+  if db_tenant_validate_identifier "" 2>/dev/null; then fail "empty must be rejected"; fi
+
+  db_tenant_is_system_name "postgres" "${DB_TENANT_PG_SYSTEM_NAMES}" || fail "postgres is system"
+  db_tenant_is_system_name "mysql.session" "${DB_TENANT_MYSQL_SYSTEM_USERS}" || fail "mysql.session is system"
+  db_tenant_is_system_name "debian-sys-maint" "${DB_TENANT_MYSQL_SYSTEM_USERS}" || fail "debian-sys-maint is system"
+  db_tenant_is_system_name "repman" "${DB_TENANT_MYSQL_SYSTEM_USERS}" || fail "repman is system"
+  db_tenant_is_system_name "replication_manager_schema" "${DB_TENANT_MYSQL_SYSTEM_DATABASES}" || fail "rms is system db"
+  if db_tenant_is_system_name "acme" "${DB_TENANT_PG_SYSTEM_NAMES}"; then fail "acme is not system"; fi
+
+  local pw; pw="$(db_tenant_generate_password)"
+  [[ "$pw" =~ ^[A-Za-z0-9]+$ ]] || fail "password must be alphanumeric: $pw"
+  assert_equals "25" "${#pw}"
+
+  assert_equals "a''b" "$(db_tenant_sql_escape_literal pg "a'b")"
+  assert_equals "a\\\\''b" "$(db_tenant_sql_escape_literal mysql "a\\'b")"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
     skeleton) run_skeleton_tests ;;
     config) run_config_tests ;;
-    all) run_skeleton_tests; run_config_tests ;;
+    common) run_common_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
