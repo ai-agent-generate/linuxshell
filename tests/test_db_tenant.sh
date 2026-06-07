@@ -94,13 +94,52 @@ run_common_tests() {
   assert_equals "a\\\\''b" "$(db_tenant_sql_escape_literal mysql "a\\'b")"
 }
 
+run_backup_helper_tests() {
+  load_db_tenant
+  assert_function_exists db_tenant_prepare_backup_dir
+  assert_function_exists db_tenant_backup_path
+  assert_function_exists db_tenant_verify_backup
+  assert_function_exists db_tenant_with_lock
+
+  local tmp; tmp="$(mktemp -d)"
+  trap "rm -rf '$tmp'" RETURN
+
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk" DB_TENANT_BACKUP_MIN_FREE_MB="1"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/db-tenant/common.sh"
+    db_tenant_prepare_backup_dir || fail "prepare should succeed"
+    assert_mode "${tmp}/bk" "700"
+    local p; p="$(db_tenant_backup_path pg acme dump)"
+    assert_str_contains "$p" "${tmp}/bk/pg-acme-"
+    assert_str_contains "$p" ".dump" )
+
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk2" DB_TENANT_BACKUP_MIN_FREE_MB="999999999"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/db-tenant/common.sh"
+    if db_tenant_prepare_backup_dir 2>/dev/null; then fail "should fail on insufficient space"; fi )
+
+  : >"${tmp}/empty.dump"
+  if db_tenant_verify_backup pg "${tmp}/empty.dump" 2>/dev/null; then fail "empty file must fail verify"; fi
+
+  printf 'not gzip' >"${tmp}/bad.sql.gz"
+  if db_tenant_verify_backup mysql "${tmp}/bad.sql.gz" 2>/dev/null; then fail "bad gzip must fail"; fi
+  printf '%s\n' "-- dummy" "-- Dump completed on 2026-06-07" | gzip >"${tmp}/ok.sql.gz"
+  db_tenant_verify_backup mysql "${tmp}/ok.sql.gz" || fail "valid mysql backup must pass"
+
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/db-tenant/common.sh"
+    printf 'x' >"${tmp}/a.dump"
+    pg_restore() { return 0; }
+    db_tenant_verify_backup pg "${tmp}/a.dump" || fail "pg verify should pass when pg_restore ok"
+    pg_restore() { return 1; }
+    if db_tenant_verify_backup pg "${tmp}/a.dump" 2>/dev/null; then fail "pg verify should fail when pg_restore fails"; fi )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
     skeleton) run_skeleton_tests ;;
     config) run_config_tests ;;
     common) run_common_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests ;;
+    backup_helper) run_backup_helper_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

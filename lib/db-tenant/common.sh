@@ -35,3 +35,51 @@ db_tenant_sql_escape_literal() {
   raw="${raw//$sq/$sq$sq}"
   printf '%s' "$raw"
 }
+
+# 准备备份目录(700)并做磁盘可用空间预检
+db_tenant_prepare_backup_dir() {
+  local dir="${DB_TENANT_BACKUP_DIR}" min_mb="${DB_TENANT_BACKUP_MIN_FREE_MB}"
+  mkdir -p "$dir" || { echo "无法创建备份目录: $dir" >&2; return 1; }
+  chmod 700 "$dir"
+  local free_mb
+  free_mb="$(df -Pm "$dir" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ -n "$free_mb" ]] && (( free_mb < min_mb )); then
+    echo "备份目录可用空间不足: ${free_mb}MB < ${min_mb}MB ($dir)" >&2
+    return 1
+  fi
+  return 0
+}
+
+# 备份文件路径(时间戳+PID,防同秒覆盖)。$1=engine $2=db $3=ext
+db_tenant_backup_path() {
+  printf '%s/%s-%s-%s-%s.%s' \
+    "${DB_TENANT_BACKUP_DIR}" "$1" "$2" "$(date +%Y%m%d-%H%M%S)" "$$" "$3"
+}
+
+# 备份完整性校验。$1=pg|mysql $2=file -> 0 完整
+db_tenant_verify_backup() {
+  local engine="$1" file="$2"
+  if [[ ! -s "$file" ]]; then echo "备份文件为空: $file" >&2; return 1; fi
+  if [[ "$engine" == "pg" ]]; then
+    pg_restore -l "$file" >/dev/null 2>&1 || { echo "pg_restore 校验失败: $file" >&2; return 1; }
+  else
+    gzip -t "$file" >/dev/null 2>&1 || { echo "gzip 校验失败: $file" >&2; return 1; }
+    if ! gzip -dc "$file" 2>/dev/null | tail -n 5 | grep -q 'Dump completed'; then
+      echo "未发现 mysqldump 完成标记: $file" >&2; return 1
+    fi
+  fi
+  return 0
+}
+
+# 写操作串行化锁(flock 不可用时降级直跑)。用法: db_tenant_with_lock <cmd...>
+db_tenant_with_lock() {
+  if ! command_exists flock; then "$@"; return $?; fi
+  mkdir -p "${DB_TENANT_BACKUP_DIR}"
+  local lock="${DB_TENANT_BACKUP_DIR}/.db-tenant.lock"
+  exec 9>"$lock"
+  if ! flock -n 9; then echo "另一个 db-tenant 操作正在进行,请稍后重试。" >&2; return 1; fi
+  "$@"
+  local rc=$?
+  flock -u 9
+  return $rc
+}
