@@ -714,6 +714,43 @@ run_status_skeleton_tests() {
   bash -n "${ROOT_DIR}/lib/pg-ha/status.sh" || fail "pg-ha/status.sh syntax error"
 }
 
+run_ha_status_entry_tests() {
+  local entry="${ROOT_DIR}/ha-status.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected ha-status.sh to be executable"
+  bash -n "$entry" || fail "ha-status.sh has syntax errors"
+  assert_contains "$entry" "ha_status_detect_stack"
+  assert_contains "$entry" "ha_status_dispatch"
+  assert_contains "$entry" "lib/pg-ha/status.sh"
+  assert_contains "$entry" "lib/mysql-ha/status.sh"
+  assert_contains "$entry" "require_root"
+
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+  # none -> 退出码 3
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/ha-status.sh"
+    load_linuxshell_modules() { :; }
+    pg_ha_status_main() { return 0; }; mysql_ha_status_main() { return 0; }
+    export PG_HA_PATRONI_YAML="${tdir}/n1" PG_HA_ETCD_CONFIG_FILE="${tdir}/n2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/n3" MYSQL_HA_MYCNF="${tdir}/n4"
+    local rc=0; ha_status_dispatch || rc=$?; assert_equals "3" "$rc" )
+  # both -> 退出码 4
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/ha-status.sh"
+    load_linuxshell_modules() { :; }
+    pg_ha_status_main() { return 0; }; mysql_ha_status_main() { return 0; }
+    : >"${tdir}/p.yml"; : >"${tdir}/c.toml"
+    export PG_HA_PATRONI_YAML="${tdir}/p.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/n2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/c.toml" MYSQL_HA_MYCNF="${tdir}/n4"
+    local rc=0; ha_status_dispatch || rc=$?; assert_equals "4" "$rc" )
+  # 显式 pg -> 调 pg_ha_status_main
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/ha-status.sh"
+    load_linuxshell_modules() { :; }
+    pg_ha_status_main() { echo PGMAIN; return 0; }
+    local out; out="$(ha_status_dispatch pg)"; assert_equals "PGMAIN" "$out" )
+}
+
 run_docs_tests() {
   local readme="${ROOT_DIR}/README.md"
   assert_contains "$readme" "install-pg-ha.sh"
@@ -752,6 +789,7 @@ main() {
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     status_skeleton) run_status_skeleton_tests ;;
+    ha_entry) run_ha_status_entry_tests ;;
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
     etcd) run_etcd_tests ;;
@@ -760,7 +798,7 @@ main() {
     orchestration) run_orchestration_tests ;;
     pg_status) run_pg_status_tests ;;
     docs) run_docs_tests ;;
-    all) run_status_common_tests; run_skeleton_tests; run_status_skeleton_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_status_common_tests; run_skeleton_tests; run_status_skeleton_tests; run_ha_status_entry_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
