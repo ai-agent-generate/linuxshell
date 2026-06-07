@@ -24,7 +24,7 @@ fw_write_command() {
 set -euo pipefail
 FW_LIB_DIR="\${FW_LIB_DIR:-${FW_LIB_DIR}}"
 source "\${FW_LIB_DIR}/linuxshell-common.sh"
-for m in config common rules docker k3s service menu main; do
+for m in config common rules docker k3s trust service menu main; do
   source "\${FW_LIB_DIR}/\${m}.sh"
 done
 fw_cli "\$@"
@@ -37,7 +37,7 @@ fw_install_modules() {
   local root m
   root="${LINUXSHELL_MODULE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
   mkdir -p "$FW_LIB_DIR"; chmod 755 "$FW_LIB_DIR"
-  for m in config common rules docker k3s service menu main; do
+  for m in config common rules docker k3s trust service menu main; do
     install -m 644 "${root}/lib/firewall/${m}.sh" "${FW_LIB_DIR}/${m}.sh"
   done
   install -m 644 "${root}/lib/common.sh" "${FW_LIB_DIR}/linuxshell-common.sh"

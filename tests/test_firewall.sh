@@ -48,7 +48,7 @@ run_skeleton_tests() {
   assert_contains "$entry" "lib/firewall/main.sh"
 
   local m
-  for m in config common rules docker k3s service menu main; do
+  for m in config common rules docker k3s trust service menu main; do
     assert_file_exists "${ROOT_DIR}/lib/firewall/${m}.sh"
     bash -n "${ROOT_DIR}/lib/firewall/${m}.sh" || fail "syntax error: lib/firewall/${m}.sh"
     assert_contains "$entry" "lib/firewall/${m}.sh"
@@ -62,6 +62,7 @@ run_skeleton_tests() {
             fw_build_input fw_build_input6 fw_build_host_rules fw_apply \
             fw_build_docker fw_build_docker6 fw_docker_allow_rules fw_docker_in_ip6 fw_docker_scan \
             fw_build_k3s_input fw_k3s_node_ips fw_check_rp_filter \
+            fw_trust_ips fw_validate_trust_ip fw_build_trust_input fw_build_trust_docker fw_menu_add_trust \
             fw_write_service fw_write_command fw_install_modules \
             firewall_menu fw_disable fw_enable fw_status \
             firewall_main fw_cli; do
@@ -249,12 +250,14 @@ run_service_tests() {
   assert_mode "$FW_BIN" "755"
   assert_contains "$FW_BIN" "linuxshell-common.sh"
   assert_contains "$FW_BIN" 'fw_cli "$@"'
+  assert_contains "$FW_BIN" "k3s trust service"
   bash -n "$FW_BIN" || fail "generated fw has syntax errors"
 
   export LINUXSHELL_MODULE_ROOT="$ROOT_DIR"
   fw_install_modules
   assert_file_exists "${FW_LIB_DIR}/common.sh"
   assert_file_exists "${FW_LIB_DIR}/linuxshell-common.sh"
+  assert_file_exists "${FW_LIB_DIR}/trust.sh"
   assert_mode "${FW_LIB_DIR}/common.sh" "644"
 }
 
