@@ -15,10 +15,17 @@ assert_mode() { # $1=file $2=expected octal(e.g. 600)
   [[ "$m" == "$2" ]] || fail "expected mode $2 on $1 but got $m"
 }
 
+load_status_common() {
+  # shellcheck disable=SC1090,SC1091
+  source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
+}
+
 # 按依赖顺序加载 MySQL-HA 模块(测试前先 export MYSQL_HA_* 覆盖路径)
 load_mysql_ha() {
   # shellcheck disable=SC1090,SC1091
   source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
   source "${ROOT_DIR}/lib/mysql-ha/config.sh"
   source "${ROOT_DIR}/lib/mysql-ha/common.sh"
   source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
@@ -26,6 +33,49 @@ load_mysql_ha() {
   source "${ROOT_DIR}/lib/mysql-ha/mysqlchk.sh"
   source "${ROOT_DIR}/lib/mysql-ha/haproxy.sh"
   source "${ROOT_DIR}/lib/mysql-ha/main.sh"
+  source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+}
+
+run_mysql_status_tests() {
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+  load_mysql_ha
+
+  # 拓扑:arbiter 从 config.toml db-servers-hosts 解析数据节点 IP
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/config.toml"
+    printf 'db-servers-hosts = "10.0.0.1:3306,10.0.0.2:3306"\n' >"${MYSQL_HA_REPMAN_CONF}"
+    mysql_ha_status_load_topology
+    assert_equals "10.0.0.1" "${MYSQL_HA_NODE1_IP}"
+    assert_equals "10.0.0.2" "${MYSQL_HA_NODE2_IP}" )
+
+  # 角色:有 zz-mysql-ha.cnf + read_only=0 -> primary
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_MYCNF="${tdir}/zz.cnf"; : >"${MYSQL_HA_MYCNF}"
+    mysql_ha_status_local_sql() { echo "0"; }
+    mysql_ha_status_detect_role; assert_equals "primary" "${MYSQL_HA_DETECTED_ROLE}" )
+  # read_only=1 -> replica
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_MYCNF="${tdir}/zz.cnf"; : >"${MYSQL_HA_MYCNF}"
+    mysql_ha_status_local_sql() { echo "1"; }
+    mysql_ha_status_detect_role; assert_equals "replica" "${MYSQL_HA_DETECTED_ROLE}" )
+  # 无 cnf、有 config.toml -> arbiter
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_MYCNF="${tdir}/none.cnf" MYSQL_HA_REPMAN_CONF="${tdir}/config.toml"
+    mysql_ha_status_detect_role; assert_equals "arbiter" "${MYSQL_HA_DETECTED_ROLE}" )
+
+  # 服务:failed -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    status_reset; systemctl() { return 1; }
+    mysql_ha_status_service_one mysql
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  assert_function_exists mysql_ha_status_identity
+  assert_function_exists mysql_ha_status_services
 }
 
 run_config_tests() {
@@ -426,6 +476,7 @@ run_orchestration_tests() {
 main() {
   local suite="${1:-all}"
   case "$suite" in
+    mysql_status) run_mysql_status_tests ;;
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
@@ -436,7 +487,7 @@ main() {
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_mysql_status_tests; run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
