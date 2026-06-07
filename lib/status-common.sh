@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lib/status-common.sh — HA 状态巡检共享库(只读)
-# 依赖 lib/common.sh(print_step/command_exists/port_in_use/to_lower)，须先 source。
+# 被 PG/MySQL HA 巡检脚本 source（后者已先加载 lib/common.sh）。
+# Task 2+ 的检查函数将直接调用 common.sh 的 command_exists/port_in_use 等工具。
 
 # ---- 阈值默认值(可被环境变量覆盖) ----
 STATUS_RECHECK_DELAY="${STATUS_RECHECK_DELAY:-3}"
@@ -29,13 +30,14 @@ STATUS_ISSUES=()
 STATUS_COVER_SEEN=0
 STATUS_COVER_UNREACH=0
 
+# 重置本次巡检会话的计数器与问题列表；着色变量由 source 时初始化，不在此重置。
 status_reset() {
   STATUS_WARN_COUNT=0; STATUS_CRIT_COUNT=0; STATUS_ISSUES=()
   STATUS_COVER_SEEN=0; STATUS_COVER_UNREACH=0
 }
 
 status_section() { printf '\n%s== %s ==%s\n' "${STATUS_C_BOLD}" "$1" "${STATUS_C_RST}"; }
-status_kv() { printf '  %-22s %s\n' "$1" "$2"; }
+status_kv() { printf '  %-22s %s\n' "$1" "${2:-}"; }
 
 # status_record <OK|WARN|CRIT|INFO> <title> [detail]
 # 采集与渲染的接缝:检查函数只调它，未来加 --json 仅换此后端。
@@ -81,5 +83,8 @@ status_summary() {
   else
     printf '  %s整体: OK%s\n' "${STATUS_C_OK}" "${STATUS_C_RST}"
   fi
-  for issue in "${STATUS_ISSUES[@]:-}"; do [[ -n "$issue" ]] && printf '   - %s\n' "$issue"; done
+  for issue in "${STATUS_ISSUES[@]:-}"; do
+    [[ -n "$issue" ]] && printf '   - %s\n' "$issue"
+  done
+  return 0
 }

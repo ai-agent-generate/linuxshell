@@ -85,7 +85,8 @@ run_status_common_tests() {
     case "$out" in *$'\033'*) fail "expected no ANSI escape when NO_COLOR set" ;; esac )
 
   # 默认阈值
-  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+  ( unset STATUS_RECHECK_DELAY STATUS_DISK_WARN_PCT STATUS_DISK_CRIT_PCT STATUS_PG_LAG_CRIT_MB STATUS_MYSQL_LAG_WARN_SEC STATUS_LOG_LINES
+    source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     assert_equals "3" "${STATUS_RECHECK_DELAY}"
     assert_equals "80" "${STATUS_DISK_WARN_PCT}"
     assert_equals "90" "${STATUS_DISK_CRIT_PCT}"
@@ -102,6 +103,17 @@ run_status_common_tests() {
   assert_function_exists status_section
   assert_function_exists status_kv
   assert_function_exists status_summary
+
+  # status_summary 输出包含整体级别与问题列表
+  ( status_reset; status_crit "node1 down"; status_warn "disk 90%"
+    local out; out="$(status_summary 2>&1)"
+    case "$out" in *CRITICAL*) ;; *) fail "expected CRITICAL in summary" ;; esac
+    case "$out" in *"node1 down"*) ;; *) fail "expected issue listed in summary" ;; esac )
+  # cover 计数
+  ( status_reset
+    status_cover_seen; status_cover_seen; status_cover_unreachable
+    assert_equals "2" "${STATUS_COVER_SEEN}"
+    assert_equals "1" "${STATUS_COVER_UNREACH}" )
 }
 
 run_config_tests() {
