@@ -130,6 +130,19 @@ run_backup_helper_tests() {
     db_tenant_verify_backup pg "${tmp}/a.dump" || fail "pg verify should pass when pg_restore ok"
     pg_restore() { return 1; }
     if db_tenant_verify_backup pg "${tmp}/a.dump" 2>/dev/null; then fail "pg verify should fail when pg_restore fails"; fi )
+
+  # flock 持锁路径(桩 flock 视为存在):退出码透传 + 抢锁失败则不执行命令
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/lk"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/db-tenant/common.sh"
+    command_exists() { return 0; }            # 视为 flock 存在
+    flock() { return 0; }                     # 抢锁成功
+    db_tenant_with_lock true || fail "lock: success cmd should return 0"
+    if db_tenant_with_lock false; then fail "lock: exit code must propagate (false)"; fi
+    ran="${tmp}/ran.flag"; : >"$ran"
+    flock() { return 1; }                     # 抢锁失败
+    spy() { echo ran >>"$ran"; }
+    if db_tenant_with_lock spy 2>/dev/null; then fail "lock: must return non-zero when flock fails"; fi
+    [[ ! -s "$ran" ]] || fail "lock: command must NOT run when lock not acquired" )
 }
 
 main() {

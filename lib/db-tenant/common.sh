@@ -51,6 +51,7 @@ db_tenant_prepare_backup_dir() {
 }
 
 # 备份文件路径(时间戳+PID,防同秒覆盖)。$1=engine $2=db $3=ext
+# 注意:$2(db) 须由调用方先经 db_tenant_validate_identifier 校验。
 db_tenant_backup_path() {
   printf '%s/%s-%s-%s-%s.%s' \
     "${DB_TENANT_BACKUP_DIR}" "$1" "$2" "$(date +%Y%m%d-%H%M%S)" "$$" "$3"
@@ -72,14 +73,14 @@ db_tenant_verify_backup() {
 }
 
 # 写操作串行化锁(flock 不可用时降级直跑)。用法: db_tenant_with_lock <cmd...>
+# 锁与备份目录同处;子shell 退出时自动释放锁并关闭 fd 9。
 db_tenant_with_lock() {
   if ! command_exists flock; then "$@"; return $?; fi
   mkdir -p "${DB_TENANT_BACKUP_DIR}"
+  chmod 700 "${DB_TENANT_BACKUP_DIR}" 2>/dev/null || true
   local lock="${DB_TENANT_BACKUP_DIR}/.db-tenant.lock"
-  exec 9>"$lock"
-  if ! flock -n 9; then echo "另一个 db-tenant 操作正在进行,请稍后重试。" >&2; return 1; fi
-  "$@"
-  local rc=$?
-  flock -u 9
-  return $rc
+  (
+    flock -n 9 || { echo "另一个 db-tenant 操作正在进行,请稍后重试。" >&2; exit 1; }
+    "$@"
+  ) 9>"$lock"
 }
