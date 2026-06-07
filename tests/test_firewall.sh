@@ -38,6 +38,36 @@ load_firewall() {
   source "${ROOT_DIR}/lib/firewall/main.sh"
 }
 
+run_skeleton_tests() {
+  local entry="${ROOT_DIR}/install-firewall.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected install-firewall.sh to be executable"
+  bash -n "$entry" || fail "install-firewall.sh has syntax errors"
+  assert_contains "$entry" "lib/common.sh"
+  assert_contains "$entry" "lib/firewall/main.sh"
+
+  local m
+  for m in config common rules docker k3s service menu main; do
+    assert_file_exists "${ROOT_DIR}/lib/firewall/${m}.sh"
+    bash -n "${ROOT_DIR}/lib/firewall/${m}.sh" || fail "syntax error: lib/firewall/${m}.sh"
+    assert_contains "$entry" "lib/firewall/${m}.sh"
+  done
+
+  load_firewall
+  local fn
+  for fn in fw_validate_port fw_validate_source fw_validate_proto \
+            fw_rules_read fw_chain_swap fw_reassert_top fw_preflight fw_have_xt \
+            fw_detect_ssh_ports fw_addr_family \
+            fw_build_input fw_build_input6 fw_build_host_rules fw_apply \
+            fw_build_docker fw_build_docker6 fw_docker_allow_rules fw_docker_in_ip6 fw_docker_scan \
+            fw_build_k3s_input fw_k3s_node_ips fw_check_rp_filter \
+            fw_write_service fw_write_command fw_install_modules \
+            firewall_menu fw_disable fw_enable fw_status \
+            firewall_main fw_cli; do
+    assert_function_exists "$fn"
+  done
+}
+
 run_config_tests() {
   ( unset FW_RULES_FILE FW_LIB_DIR FW_K3S_TCP_PORTS FW_K3S_UDP_PORTS FW_K3S_POD_CIDR
     source "${ROOT_DIR}/lib/firewall/config.sh"
@@ -63,7 +93,8 @@ main() {
   local suite="${1:-all}"
   case "$suite" in
     config) run_config_tests ;;
-    all) run_config_tests ;;
+    skeleton) run_skeleton_tests ;;
+    all) run_skeleton_tests; run_config_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
