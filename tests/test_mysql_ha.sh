@@ -76,6 +76,55 @@ run_mysql_status_tests() {
 
   assert_function_exists mysql_ha_status_identity
   assert_function_exists mysql_ha_status_services
+
+  # 复制:从库 IO 线程断 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=replica
+    mysql_ha_status_local_sql() { printf 'Replica_IO_Running: No\nReplica_SQL_Running: Yes\nSeconds_Behind_Source: 0\n'; }
+    status_reset; mysql_ha_status_replication
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+  # 复制:延迟超 WARN 线 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=replica
+    mysql_ha_status_local_sql() { printf 'Replica_IO_Running: Yes\nReplica_SQL_Running: Yes\nSeconds_Behind_Source: 60\n'; }
+    status_reset; mysql_ha_status_replication
+    assert_equals "1" "${STATUS_WARN_COUNT}"; assert_equals "0" "${STATUS_CRIT_COUNT}" )
+
+  # 静默退化:半同步 OFF -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_SEMISYNC=on; MYSQL_HA_DETECTED_ROLE=primary
+    mysql_ha_status_local_sql() { case "$1" in *source_status*) echo "Rpl_semi_sync_source_status	OFF" ;; *source_clients*) echo "Rpl_semi_sync_source_clients	0" ;; *) echo "" ;; esac; }
+    status_reset; mysql_ha_status_degradation
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+  # 静默退化:从库 read_only=0(僵尸主) -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=replica
+    mysql_ha_status_local_sql() { case "$1" in *REPLICA\ STATUS*) printf 'Replica_IO_Running: Yes\nReplica_SQL_Running: Yes\n' ;; *read_only*) echo 0 ;; esac; }
+    status_reset; mysql_ha_status_degradation
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 防脑裂:两节点 mysqlchk 都 200 -> 多主 CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary
+    export MYSQL_HA_NODE1_IP=10.0.0.1 MYSQL_HA_NODE2_IP=10.0.0.2
+    curl() { echo 200; }
+    status_reset; mysql_ha_status_splitbrain
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+  # 防脑裂:arbiter 上 repman 未运行 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=arbiter
+    systemctl() { return 1; }
+    status_reset; mysql_ha_status_splitbrain
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  assert_function_exists mysql_ha_status_topology
+  assert_function_exists mysql_ha_status_ingress
 }
 
 run_config_tests() {
