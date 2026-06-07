@@ -165,6 +165,10 @@ pg_drop_tenant() {
   local typed; typed="$(prompt_with_default "确认删除请重新输入租户名" "")"
   if [[ "$typed" != "$role" ]]; then echo "名称不匹配,已取消。" >&2; return 1; fi
   local force; if pg_supports_force; then force=1; else force=0; fi
-  pg_build_drop_sql "$role" "$db" "$force" "$(pg_role_exists "$role")" "$(pg_db_exists "$db")" | pg_exec_sql postgres
-  echo "已删除租户: $role / $db (备份: ${PG_BACKUP_FILE:-N/A})"
+  if pg_build_drop_sql "$role" "$db" "$force" "$(pg_role_exists "$role")" "$(pg_db_exists "$db")" | pg_exec_sql postgres; then
+    echo "已删除租户: $role / $db (备份: ${PG_BACKUP_FILE:-N/A})"
+  else
+    echo "DROP 执行失败(备份已生成: ${PG_BACKUP_FILE:-N/A});请检查后重试。" >&2
+    return 1
+  fi
 }

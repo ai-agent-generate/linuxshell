@@ -174,6 +174,10 @@ mysql_drop_tenant() {
   echo "将删除: 数据库 \`$db\` + 账号 '$user'@'$host'"
   local typed; typed="$(prompt_with_default "确认删除请重新输入租户名" "")"
   if [[ "$typed" != "$user" ]]; then echo "名称不匹配,已取消。" >&2; return 1; fi
-  mysql_build_drop_sql "$user" "$host" "$db" "$(mysql_db_exists "$db")" "$(mysql_user_exists "$user" "$host")" | mysql_exec_sql
-  echo "已删除租户: $user@$host / $db (备份: ${MYSQL_BACKUP_FILE:-N/A})"
+  if mysql_build_drop_sql "$user" "$host" "$db" "$(mysql_db_exists "$db")" "$(mysql_user_exists "$user" "$host")" | mysql_exec_sql; then
+    echo "已删除租户: $user@$host / $db (备份: ${MYSQL_BACKUP_FILE:-N/A})"
+  else
+    echo "DROP 执行失败(备份已生成: ${MYSQL_BACKUP_FILE:-N/A});请检查后重试。" >&2
+    return 1
+  fi
 }

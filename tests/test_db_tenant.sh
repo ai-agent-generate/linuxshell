@@ -330,6 +330,22 @@ run_pg_safety_tests() {
     if pg_drop_tenant acme acme 2>/dev/null; then fail "drop must abort on standby"; fi
     assert_not_contains "$log" "DROP"
     assert_not_contains "$log" "BACKUP_RAN" )
+
+  # 备份成功+确认匹配,但 DROP 执行失败 -> 返回非零且不报"已删除"
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk6"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_guard_not_system_role() { return 0; }
+    pg_query() { echo "1"; }
+    pg_supports_force() { return 1; }
+    pg_backup_tenant() { return 0; }
+    pg_exec_sql() { cat >>"$log"; return 1; }
+    prompt_with_default() { echo "acme"; }
+    out="$(pg_drop_tenant acme acme 2>/dev/null)" && rc=0 || rc=$?
+    [[ "$rc" -ne 0 ]] || fail "pg drop must return non-zero when exec fails"
+    assert_str_missing "$out" "已删除" )
 }
 
 run_mysql_safety_tests() {
@@ -401,6 +417,35 @@ run_mysql_safety_tests() {
     if mysql_drop_tenant acme '%' acme 2>/dev/null; then fail "drop must abort on read-only"; fi
     assert_not_contains "$log" "DROP"
     assert_not_contains "$log" "BACKUP_RAN" )
+
+  # 确认名不匹配 -> 不 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk5"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_guard_not_system() { return 0; }
+    mysql_query() { echo "1"; }
+    mysql_backup_tenant() { return 0; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "WRONG"; }
+    if mysql_drop_tenant acme '%' acme 2>/dev/null; then fail "mysql drop must abort on name mismatch"; fi
+    assert_not_contains "$log" "DROP" )
+
+  # 备份成功+确认匹配,但 DROP 执行失败 -> 返回非零且不报"已删除"
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk6"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_guard_not_system() { return 0; }
+    mysql_query() { echo "1"; }
+    mysql_backup_tenant() { return 0; }
+    mysql_exec_sql() { cat >>"$log"; return 1; }
+    prompt_with_default() { echo "acme"; }
+    out="$(mysql_drop_tenant acme '%' acme 2>/dev/null)" && rc=0 || rc=$?
+    [[ "$rc" -ne 0 ]] || fail "mysql drop must return non-zero when exec fails"
+    assert_str_missing "$out" "已删除" )
 }
 
 main() {
