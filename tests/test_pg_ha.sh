@@ -41,12 +41,14 @@ load_status_common() {
 load_pg_ha() {
   # shellcheck disable=SC1090,SC1091
   source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
   source "${ROOT_DIR}/lib/pg-ha/config.sh"
   source "${ROOT_DIR}/lib/pg-ha/common.sh"
   source "${ROOT_DIR}/lib/pg-ha/etcd.sh"
   source "${ROOT_DIR}/lib/pg-ha/patroni.sh"
   source "${ROOT_DIR}/lib/pg-ha/haproxy.sh"
   source "${ROOT_DIR}/lib/pg-ha/main.sh"
+  source "${ROOT_DIR}/lib/pg-ha/status.sh"
 }
 
 run_status_common_tests() {
@@ -530,6 +532,56 @@ run_orchestration_tests() {
   assert_contains "$action_log" "pg_ha_preflight_connectivity"
 }
 
+run_pg_status_tests() {
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+  load_pg_ha
+
+  # 拓扑解析:从 etcd.conf.yml 的 initial-cluster 还原节点 IP
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_ETCD_CONFIG_FILE="${tdir}/etcd.conf.yml"
+    printf 'initial-cluster: node1=http://10.0.0.1:2380,node2=http://10.0.0.2:2380,node3=http://10.0.0.3:2380\n' >"${PG_HA_ETCD_CONFIG_FILE}"
+    pg_ha_status_load_topology
+    assert_equals "10.0.0.1" "${PG_HA_NODE1_IP}"
+    assert_equals "10.0.0.2" "${PG_HA_NODE2_IP}"
+    assert_equals "10.0.0.3" "${PG_HA_NODE3_IP}" )
+
+  # 角色发现:有 patroni.yml + pg_is_in_recovery()=f -> primary
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    pg_ha_status_local_psql() { echo "f"; }
+    pg_ha_status_detect_role; assert_equals "primary" "${PG_HA_DETECTED_ROLE}" )
+  # =t -> replica
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    pg_ha_status_local_psql() { echo "t"; }
+    pg_ha_status_detect_role; assert_equals "replica" "${PG_HA_DETECTED_ROLE}" )
+  # 无 patroni.yml、有 etcd 配置 -> quorum
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/none.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/etcd.conf.yml"
+    pg_ha_status_detect_role; assert_equals "quorum" "${PG_HA_DETECTED_ROLE}" )
+
+  # 服务检查:active+enabled -> OK；failed -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    status_reset
+    systemctl() { case "$*" in *"is-active"*) return 0 ;; *"is-enabled"*) return 0 ;; *) echo "" ;; esac; }
+    pg_ha_status_service_one etcd
+    assert_equals "0" "${STATUS_CRIT_COUNT}"; assert_equals "0" "${STATUS_WARN_COUNT}" )
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    status_reset
+    systemctl() { return 1; }
+    pg_ha_status_service_one patroni
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  assert_function_exists pg_ha_status_identity
+  assert_function_exists pg_ha_status_services
+}
+
 run_docs_tests() {
   local readme="${ROOT_DIR}/README.md"
   assert_contains "$readme" "install-pg-ha.sh"
@@ -573,8 +625,9 @@ main() {
     patroni) run_patroni_tests ;;
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
+    pg_status) run_pg_status_tests ;;
     docs) run_docs_tests ;;
-    all) run_status_common_tests; run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_status_common_tests; run_skeleton_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
