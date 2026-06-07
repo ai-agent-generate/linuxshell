@@ -589,6 +589,14 @@ run_dispatch_tests() {
     assert_str_contains "$out" "R6 acme acme" )
 }
 
+run_docs_tests() {
+  local readme="${ROOT_DIR}/README.md"
+  assert_contains "$readme" "db-tenant.sh"
+  assert_contains "$readme" "多租户"
+  assert_contains "$readme" "DB_TENANT_BACKUP_DIR"
+  assert_contains "$readme" "primary"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -602,7 +610,8 @@ main() {
     mysql_safety) run_mysql_safety_tests ;;
     action) run_action_tests ;;
     dispatch) run_dispatch_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests; run_mysql_safety_tests; run_action_tests; run_dispatch_tests ;;
+    docs) run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests; run_mysql_safety_tests; run_action_tests; run_dispatch_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

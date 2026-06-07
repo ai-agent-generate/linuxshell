@@ -111,6 +111,35 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 
 > 这是**非 Docker** 路径，与现有 Docker 版 MySQL（`deploy.sh` 菜单项 3）**并存但同机不可并跑**（均占 3306 / server_id 易撞）。
 
+## 数据库多租户管理（db-tenant.sh）
+
+为已部署的 MySQL / PostgreSQL 按「一库一角色」管理多租户，并对角色施加账号级资源限制，
+避免某个租户瞬时爆发拖垮同实例的其他租户。
+
+一键运行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/db-tenant.sh)
+```
+
+或本地：`bash db-tenant.sh`（菜单驱动：先选引擎，再选 建/列出/改限额/改密码/备份/删除）。
+
+- **自动探测**：同名容器在运行用 `docker exec`；否则用本机 socket/客户端（探测结果会要求确认；可用
+  `DB_TENANT_FORCE_TARGET=docker|local` 覆盖）。
+- **资源限制**：
+  - PostgreSQL：角色/库连接上限、`statement_timeout`、`idle_in_transaction_session_timeout`、`work_mem`。
+  - MySQL：`MAX_USER_CONNECTIONS`、每小时连接/查询/更新配额。**MySQL 无账号级语句超时**
+    （`max_execution_time` 仅对 SELECT 生效且为全局/会话级，本工具不设置）。
+  - 数值语义：各「每小时」配额 `0` 表示不限；`MAX_USER_CONNECTIONS=0` 表示回退到全局
+    `max_user_connections`（并非真正无限）。
+- **删除前先备份**：删除会先把库 `pg_dump`/`mysqldump` 到 `DB_TENANT_BACKUP_DIR`
+  （默认 `/var/backups/db-tenant`），并做完整性校验，**校验失败则中止删除**；随后需重输租户名二次确认。
+  备份仅含数据库，角色/限额需另行重建。
+- **HA 注意**：写操作（含删除）需在 `primary`/`leader` 节点运行；独立备份可在 standby。
+- **端口/防火墙**：本工具为客户端工具，**不监听端口、不修改防火墙**。
+- MySQL 管理员密码取自 `DB_TENANT_MYSQL_ADMIN_PASSWORD`，缺省回退 `MYSQL_HA_ROOT_PASSWORD` /
+  `MYSQL_ROOT_PASSWORD`，再缺则交互输入。
+
 ## 快捷使用 psql
 
 部署 PostgreSQL 时会自动安装 `pg` 命令（`/usr/local/bin/pg`），等价于 `docker exec -it postgres psql -U <user>`：
