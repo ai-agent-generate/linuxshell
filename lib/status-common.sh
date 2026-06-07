@@ -88,3 +88,42 @@ status_summary() {
   done
   return 0
 }
+
+# 从配置文件提取值:只回显 sed 捕获组(绝不输出整行/不回显完整凭据上下文)
+status_extract_kv() {
+  local file="$1" sed_expr="$2"
+  [[ -r "$file" ]] || return 1
+  sed -n "$sed_expr" "$file" | head -n1
+}
+
+# 对输入流做密码脱敏(用于展示日志/配置佐证前)
+status_redact() {
+  sed -E \
+    -e 's/(password|passwd|pwd)([=:[:space:]]+)[^[:space:]"]+/\1\2***/Ig' \
+    -e 's,(://[^:/@[:space:]]+:)[^@/[:space:]]+@,\1***@,g' \
+    -e 's/(-p)[^[:space:]]+/\1***/g' \
+    -e 's/(auth[[:space:]]+[^:[:space:]]+:)[^[:space:]]+/\1***/Ig'
+}
+
+# 安全 curl:凭据经 -K 临时配置文件传入，绝不进命令行。用法:status_curl_cred <user> <pass> <curl-args...>
+status_curl_cred() {
+  local user="$1" pass="$2"; shift 2
+  local cfg rc=0
+  cfg="$(umask 077; mktemp)" || return 1
+  printf 'user = "%s:%s"\n' "$user" "$pass" >"$cfg"
+  curl -K "$cfg" "$@" || rc=$?
+  rm -f "$cfg"
+  return "$rc"
+}
+
+# 本机对外 IP:在 hostname -I 集合中匹配传入的 NODE IP 列表，命中即返回
+status_local_ip() {
+  local candidate host_ips ip
+  host_ips="$(hostname -I 2>/dev/null || true)"
+  for candidate in "$@"; do
+    for ip in $host_ips; do
+      [[ "$ip" == "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
+    done
+  done
+  return 1
+}

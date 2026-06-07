@@ -114,6 +114,33 @@ run_status_common_tests() {
     status_cover_seen; status_cover_seen; status_cover_unreachable
     assert_equals "2" "${STATUS_COVER_SEEN}"
     assert_equals "1" "${STATUS_COVER_UNREACH}" )
+
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+
+  # status_extract_kv: 从 haproxy.cfg 取 stats 密码(只回显捕获组)
+  printf 'listen stats\n    stats auth admin:s3cretPW\n' >"${tdir}/haproxy.cfg"
+  local v; v="$(status_extract_kv "${tdir}/haproxy.cfg" 's/.*stats auth admin:\(.*\)/\1/p')"
+  assert_equals "s3cretPW" "$v"
+
+  # repman api-credentials 提取必须保留 user
+  printf 'api-credentials = "admin:apiPW"\n' >"${tdir}/config.toml"
+  local cred; cred="$(status_extract_kv "${tdir}/config.toml" 's/.*api-credentials = "\([^"]*\)".*/\1/p')"
+  assert_equals "admin:apiPW" "$cred"
+
+  # status_redact: 密码模式被打码
+  local red; red="$(printf 'password=topsecret\n' | status_redact)"
+  case "$red" in *topsecret*) fail "status_redact must hide password value" ;; esac
+
+  # status_curl_cred: 凭据写临时文件(-K)，不出现在 curl 命令行参数
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    local seen; seen="$(curl() { printf '%s\n' "$*"; }; status_curl_cred admin apiPW -s http://127.0.0.1:7000/)"
+    case "$seen" in *apiPW*) fail "credential leaked into curl args" ;; esac
+    case "$seen" in *-K*) : ;; *) fail "expected curl -K config-file usage" ;; esac )
+
+  # status_local_ip: 在 hostname -I 集合中匹配 NODE*_IP
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    hostname() { echo "10.0.0.2 172.17.0.1"; }
+    assert_equals "10.0.0.2" "$(status_local_ip 10.0.0.1 10.0.0.2 10.0.0.3)" )
 }
 
 run_config_tests() {
