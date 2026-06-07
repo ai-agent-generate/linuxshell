@@ -247,6 +247,39 @@ run_service_tests() {
   assert_mode "${FW_LIB_DIR}/common.sh" "644"
 }
 
+run_orchestration_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/act.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  export FW_SSH_PORT=2222
+  load_firewall
+  fw_preflight() { echo preflight >>"$log"; }
+  fw_install_modules() { echo install >>"$log"; }
+  fw_write_command() { echo write_command >>"$log"; }
+  fw_write_service() { echo write_service >>"$log"; }
+  systemctl() { echo "systemctl $*" >>"$log"; }
+  fw_docker_scan() { echo scan >>"$log"; }
+  fw_apply() { echo apply >>"$log"; }
+  firewall_menu() { echo menu >>"$log"; }
+
+  : >"$log"
+  firewall_main
+  assert_contains "$log" "install"
+  assert_contains "$log" "write_command"
+  assert_contains "$log" "apply"
+  assert_contains "$log" "menu"
+  assert_order "$log" "apply" "menu"
+  assert_file_exists "$FW_RULES_FILE"
+  assert_mode "$FW_RULES_FILE" "600"
+  fw_rules_read | grep -Fq "tcp 2222 any SSH" || fail "expected default SSH rule honoring FW_SSH_PORT"
+
+  # fw_cli 路由
+  : >"$log"
+  fw_status() { echo status >>"$log"; }
+  fw_cli status
+  assert_contains "$log" "status"
+}
+
 run_disable_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   local log="${temp_root}/sys.log"
@@ -313,7 +346,8 @@ main() {
     ipv6) run_ipv6_tests ;;
     service) run_service_tests ;;
     disable) run_disable_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests ;;
+    orchestration) run_orchestration_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
