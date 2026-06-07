@@ -35,6 +35,6 @@ fw_check_rp_filter() {
   local path="${FW_RP_FILTER_PATH:-/proc/sys/net/ipv4/conf/all/rp_filter}" v
   v="$(cat "$path" 2>/dev/null || echo 0)"
   if [[ "$v" == "0" ]]; then
-    echo "警告:rp_filter=0,源 IP 伪造防护未启用;k3s 节点放行依赖网络隔离。" >&2
+    echo "警告:rp_filter=0,源 IP 伪造防护未启用;k3s 节点 / 信任 IP 放行依赖网络隔离。" >&2
   fi
 }

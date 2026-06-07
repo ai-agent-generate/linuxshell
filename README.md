@@ -226,6 +226,8 @@ fw disable 30m    # 临时禁用,30 分钟后自动恢复
 
 **Docker 端口 deny-by-default**：容器发布端口（经 `DOCKER-USER`）默认拒绝外部访问,即使 `INPUT=DROP` 也不让 redis/mysql 等绕过暴露。对外服务（如 Caddy 80/443）需在菜单"添加 Docker 端口放行"登记来源。
 
+**信任 IP（全端口放行）**：菜单"添加信任 IP（全端口）"录入**单个**可信 IP（IPv4 或 IPv6，不支持网段 / `any`），对其放行全部端口——主机所有监听端口 + 所有 Docker 容器发布端口 + 全协议，相当于完全信任该地址。属高危操作，添加时需二次确认；基于源 IP 匹配，防伪造依赖网络隔离（`rp_filter`）。配置行形如 `trust - - - 203.0.113.10 备注`。
+
 **k3s 节点**：菜单录入各节点 IP,脚本逐端口放行 k3s 必需端口（`6443/10250/2379-2380` TCP、`8472` UDP VXLAN）及 CNI（pod `10.42.0.0/16`、`cni0`/`flannel.1`）。改了 k3s 默认 CIDR/端口用环境变量覆盖。
 
 **IPv6**：自动同管（ip6tables 镜像,放行 NDP/echo 必需 ICMPv6,排除 redirect）。

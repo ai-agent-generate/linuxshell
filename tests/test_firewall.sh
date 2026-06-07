@@ -320,6 +320,7 @@ run_docs_tests() {
   assert_contains "$readme" "DOCKER-USER"
   assert_contains "$readme" "deny-by-default"
   assert_contains "$readme" "10.42.0.0/16"
+  assert_contains "$readme" "信任 IP"
 }
 
 run_disable_tests() {

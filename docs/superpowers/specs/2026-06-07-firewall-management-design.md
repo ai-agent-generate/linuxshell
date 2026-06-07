@@ -88,7 +88,7 @@
 | `lib/firewall/menu.sh` | 交互菜单（含禁用态告警） |
 | `lib/firewall/main.sh` | 编排与主入口 `firewall_main` |
 
-加载顺序：`lib/common.sh(根) → config → common → rules → docker → k3s → service → menu → main`
+加载顺序：`lib/common.sh(根) → config → common → rules → docker → k3s → trust → service → menu → main`（`trust` 见 `2026-06-07-firewall-trust-ip-design.md`）
 
 > `lib/firewall/common.sh` 与根 `lib/common.sh` 同名不同路径，bash 按完整路径 source 各自定义函数、不冲突。安装到 `/usr/local/lib/linuxshell-fw/` 时根 common 改名为 `linuxshell-common.sh` 以消歧（见 fw 命令布局）。
 
@@ -109,7 +109,7 @@ node      -       -      -         10.0.0.2        k3s-agent1
 
 - 字段空格/制表分隔，前 5 字段固定，第 6 字段起为 `comment`（可含空格）。
 - `#` 开头与空行忽略。
-- `type`：`host`（主机入站白名单）/ `docker`（容器发布端口的**放行例外**，因为 docker 已 deny-by-default）/ `node`（k3s 节点，放行其源 IP 的 k3s 端口组）。
+- `type`：`host`（主机入站白名单）/ `docker`（容器发布端口的**放行例外**，因为 docker 已 deny-by-default）/ `node`（k3s 节点，放行其源 IP 的 k3s 端口组）；`trust`（信任 IP，对单个可信 IP 放行全部端口，详见 `2026-06-07-firewall-trust-ip-design.md`）
 - `proto`/`port`：`tcp`/`udp`；端口支持单值、逗号列表（`multiport` ≤15 个）、范围 `a:b`。`node` 行为 `-`（端口组由 config 定义）。
 - `source`：`any` / CIDR / 单 IP（IPv4 或 IPv6）。
 - **sanity 校验**：拒绝等价于"关闭防火墙"的危险组合（如 `host allow tcp 0:65535 any`），或要求二次确认。
