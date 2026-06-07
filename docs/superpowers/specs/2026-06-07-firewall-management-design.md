@@ -84,6 +84,7 @@
 | `lib/firewall/rules.sh` | 主机入站规则 CRUD + `FW-INPUT` apply（含 SSH guard） |
 | `lib/firewall/docker.sh` | `FW-DOCKER` 子链 deny-by-default 容器端口控制 |
 | `lib/firewall/k3s.sh` | k3s 节点逐端口放行 + CNI 放行 + `rp_filter` 检测 |
+| `lib/firewall/trust.sh` | 信任 IP 读取 / 校验 / FW-INPUT 与 FW-DOCKER 放行（详见 `2026-06-07-firewall-trust-ip-design.md`） |
 | `lib/firewall/service.sh` | systemd unit 生成 + 模块安装布局 + `fw` 命令生成 + 权限设置 |
 | `lib/firewall/menu.sh` | 交互菜单（含禁用态告警） |
 | `lib/firewall/main.sh` | 编排与主入口 `firewall_main` |
