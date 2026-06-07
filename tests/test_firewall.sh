@@ -247,6 +247,25 @@ run_service_tests() {
   assert_mode "${FW_LIB_DIR}/common.sh" "644"
 }
 
+run_disable_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/sys.log"
+  export FW_BIN="${temp_root}/fw"
+  load_firewall
+  iptables() { case "$1" in -C) return 1 ;; esac; return 0; }
+  mock_sdr() { echo "systemd-run $*" >>"$log"; }
+  export FW_SYSTEMD_RUN=mock_sdr
+  : >"$log"
+  fw_disable 30m
+  assert_contains "$log" "--on-active=30m"
+  assert_contains "$log" "apply --quiet"
+
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  mkdir -p "$FW_RULES_DIR"; : >"$FW_RULES_FILE"
+  iptables() { case "$1" in -nL) echo "Chain INPUT (policy ACCEPT)" ;; -C) return 1 ;; esac; return 0; }
+  grep -Fq "已禁用" <<<"$(fw_status 2>&1)" || fail "expected disabled warning when policy ACCEPT"
+}
+
 run_docker_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   local log="${temp_root}/ipt.log"
@@ -293,7 +312,8 @@ main() {
     k3s) run_k3s_tests ;;
     ipv6) run_ipv6_tests ;;
     service) run_service_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests ;;
+    disable) run_disable_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
