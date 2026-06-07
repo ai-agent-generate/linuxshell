@@ -260,10 +260,14 @@ mysql_ha_status_clock() {
 mysql_ha_status_logs() {
   status_section "关键日志摘要(最近 ${STATUS_LOG_LINES} 行 warning+)"
   command_exists journalctl || { status_info "日志" "journalctl 不可用，跳过"; return 0; }
-  local svcs svc lines
-  if [[ "${MYSQL_HA_DETECTED_ROLE}" == "arbiter" ]]; then svcs="replication-manager"
-  else svcs="mysql haproxy mysqlchk@*"; fi
-  for svc in $svcs; do
+  local svc lines
+  local -a svcs
+  if [[ "${MYSQL_HA_DETECTED_ROLE}" == "arbiter" ]]; then
+    svcs=(replication-manager)
+  else
+    svcs=(mysql haproxy 'mysqlchk@*')
+  fi
+  for svc in "${svcs[@]}"; do
     lines="$(journalctl -u "$svc" -n "${STATUS_LOG_LINES}" -p warning --no-pager 2>/dev/null | status_redact || true)"
     if [[ -n "$lines" ]]; then printf '  --- %s ---\n' "$svc"; printf '%s\n' "$lines" | sed 's/^/    /'
     else status_ok "$svc 日志" "近期无 warning 级以上记录"; fi
@@ -272,13 +276,13 @@ mysql_ha_status_logs() {
 
 mysql_ha_status_config_audit() {
   status_section "配置与连通性自检"
-  local f files m ip owner
+  local f files m ip
   if [[ "${MYSQL_HA_DETECTED_ROLE}" == "arbiter" ]]; then files="${MYSQL_HA_REPMAN_CONF}"
   else files="${MYSQL_HA_MYCNF} ${MYSQL_HA_MYSQLCHK_CNF} ${MYSQL_HA_HAPROXY_CFG}"; fi
   for f in $files; do
     if [[ -e "$f" ]]; then status_ok "配置 $(basename "$f")" "存在"; else status_warn "配置 $(basename "$f")" "缺失"; fi
   done
-  # 权限 + 属主:config.toml 应 600 root；mysqlchk.cnf 应 600 mysql
+  # 权限模式位 600（属主由部署脚本保证，此处只校验模式位）
   if [[ -e "${MYSQL_HA_REPMAN_CONF}" ]]; then
     m="$(stat -c '%a' "${MYSQL_HA_REPMAN_CONF}" 2>/dev/null || stat -f '%Lp' "${MYSQL_HA_REPMAN_CONF}" 2>/dev/null || true)"
     [[ "$m" == "600" ]] || status_warn "权限 config.toml" "期望 600 实际 ${m}"
