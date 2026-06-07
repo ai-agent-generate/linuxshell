@@ -145,6 +145,56 @@ run_backup_helper_tests() {
     [[ ! -s "$ran" ]] || fail "lock: command must NOT run when lock not acquired" )
 }
 
+run_pg_sql_tests() {
+  load_db_tenant
+  assert_function_exists pg_build_create_tenant_sql
+  assert_function_exists pg_build_set_limit_sql
+  assert_function_exists pg_build_set_password_sql
+  assert_function_exists pg_build_drop_sql
+  assert_function_exists pg_build_list_sql
+
+  local sql
+  # 新建:role 不存在、db 不存在、db 新建
+  sql="$(pg_build_create_tenant_sql acme acme PWD 20 20 30s 300s 16MB 0 0 1)"
+  assert_str_contains "$sql" "CREATE ROLE \"acme\" LOGIN PASSWORD 'PWD' CONNECTION LIMIT 20;"
+  assert_str_contains "$sql" "CREATE DATABASE \"acme\" OWNER \"acme\" CONNECTION LIMIT 20;"
+  assert_str_contains "$sql" "REVOKE CONNECT ON DATABASE \"acme\" FROM PUBLIC;"
+  assert_str_contains "$sql" "ALTER ROLE \"acme\" IN DATABASE \"acme\" SET statement_timeout = '30s';"
+  assert_str_contains "$sql" "SET idle_in_transaction_session_timeout = '300s';"
+  assert_str_contains "$sql" "SET work_mem = '16MB';"
+  assert_str_missing "$sql" "BEGIN;"
+  assert_str_missing "$sql" "COMMIT;"
+  # 已存在:role 存在、db 存在 -> ALTER 分支,且不重复 REVOKE PUBLIC
+  sql="$(pg_build_create_tenant_sql acme acme PWD 20 20 30s 300s 16MB 1 1 0)"
+  assert_str_contains "$sql" "ALTER ROLE \"acme\" CONNECTION LIMIT 20;"
+  assert_str_contains "$sql" "ALTER DATABASE \"acme\" OWNER TO \"acme\";"
+  assert_str_missing "$sql" "CREATE DATABASE"
+  assert_str_missing "$sql" "FROM PUBLIC;"
+
+  sql="$(pg_build_set_limit_sql acme acme 30 30 10s 120s 32MB)"
+  assert_str_contains "$sql" "ALTER ROLE \"acme\" CONNECTION LIMIT 30;"
+  assert_str_contains "$sql" "ALTER DATABASE \"acme\" CONNECTION LIMIT 30;"
+  assert_str_contains "$sql" "SET work_mem = '32MB';"
+
+  sql="$(pg_build_set_password_sql acme NEWPW)"
+  assert_str_contains "$sql" "ALTER ROLE \"acme\" PASSWORD 'NEWPW';"
+
+  # drop:force=1, role/db 均存在
+  sql="$(pg_build_drop_sql acme acme 1 1 1)"
+  assert_str_contains "$sql" "pg_terminate_backend(pid)"
+  assert_str_contains "$sql" "DROP DATABASE IF EXISTS \"acme\" WITH (FORCE);"
+  assert_str_contains "$sql" "DROP OWNED BY \"acme\";"
+  assert_str_contains "$sql" "DROP ROLE IF EXISTS \"acme\";"
+  # drop:force=0 -> 无 FORCE
+  sql="$(pg_build_drop_sql acme acme 0 1 1)"
+  assert_str_contains "$sql" "DROP DATABASE IF EXISTS \"acme\";"
+  assert_str_missing "$sql" "WITH (FORCE)"
+
+  sql="$(pg_build_list_sql)"
+  assert_str_contains "$sql" "pg_database"
+  assert_str_contains "$sql" "rolconnlimit"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -152,7 +202,8 @@ main() {
     config) run_config_tests ;;
     common) run_common_tests ;;
     backup_helper) run_backup_helper_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests ;;
+    pg_sql) run_pg_sql_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
