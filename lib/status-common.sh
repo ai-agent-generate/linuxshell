@@ -127,3 +127,27 @@ status_local_ip() {
   done
   return 1
 }
+
+# 探测本机 HA 栈(仅用文件存在性，走 config 路径变量以便测试覆盖)
+# 输出:pg | mysql | both | none
+ha_status_detect_stack() {
+  local has_pg=0 has_mysql=0
+  if [[ -e "${PG_HA_PATRONI_YAML:-/etc/patroni/patroni.yml}" \
+     || -e "${PG_HA_ETCD_CONFIG_FILE:-/etc/etcd/etcd.conf.yml}" ]]; then has_pg=1; fi
+  if [[ -e "${MYSQL_HA_REPMAN_CONF:-/etc/replication-manager/config.toml}" \
+     || -e "${MYSQL_HA_MYCNF:-/etc/mysql/mysql.conf.d/zz-mysql-ha.cnf}" ]]; then has_mysql=1; fi
+  if [[ "$has_pg" -eq 1 && "$has_mysql" -eq 1 ]]; then printf 'both'
+  elif [[ "$has_pg" -eq 1 ]]; then printf 'pg'
+  elif [[ "$has_mysql" -eq 1 ]]; then printf 'mysql'
+  else printf 'none'; fi
+}
+
+# 瞬态二次复采:probe 返回 0=正常/非0=异常。
+# 返回 0=两次正常; 10=首次异常但复采恢复(瞬态,调用方应判 WARN); 1=持续异常(调用方判 CRIT)
+status_recheck() {
+  local probe="$1"
+  if "$probe"; then return 0; fi
+  sleep "${STATUS_RECHECK_DELAY}"
+  if "$probe"; then return 10; fi
+  return 1
+}

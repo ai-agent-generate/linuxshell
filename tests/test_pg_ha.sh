@@ -141,6 +141,45 @@ run_status_common_tests() {
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     hostname() { echo "10.0.0.2 172.17.0.1"; }
     assert_equals "10.0.0.2" "$(status_local_ip 10.0.0.1 10.0.0.2 10.0.0.3)" )
+
+  # ha_status_detect_stack: 用路径变量覆盖伪造存在性(不碰真实 /etc)
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/none-etcd"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/none-repman" MYSQL_HA_MYCNF="${tdir}/none-cnf"
+    : >"${tdir}/patroni.yml"
+    assert_equals "pg" "$(ha_status_detect_stack)" )
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/none1" PG_HA_ETCD_CONFIG_FILE="${tdir}/none2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/config.toml" MYSQL_HA_MYCNF="${tdir}/none-cnf"
+    assert_equals "mysql" "$(ha_status_detect_stack)" )  # config.toml 已在 Step1 建
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/none2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/config.toml" MYSQL_HA_MYCNF="${tdir}/none-cnf"
+    assert_equals "both" "$(ha_status_detect_stack)" )
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/none1" PG_HA_ETCD_CONFIG_FILE="${tdir}/none2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/none3" MYSQL_HA_MYCNF="${tdir}/none4"
+    assert_equals "none" "$(ha_status_detect_stack)" )
+
+  # status_recheck: 首次正常 -> 0
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export STATUS_RECHECK_DELAY=0
+    probe_ok() { return 0; }
+    local rc=0; status_recheck probe_ok || rc=$?
+    assert_equals "0" "$rc" )
+  # 首次异常、复采恢复 -> 10(瞬态)
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export STATUS_RECHECK_DELAY=0
+    STATE="${tdir}/probe.state"; : >"$STATE"
+    probe_flap() { if [[ -s "$STATE" ]]; then return 0; fi; echo x >"$STATE"; return 1; }
+    local rc=0; status_recheck probe_flap || rc=$?
+    assert_equals "10" "$rc" )
+  # 持续异常 -> 1
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export STATUS_RECHECK_DELAY=0
+    probe_bad() { return 1; }
+    local rc=0; status_recheck probe_bad || rc=$?
+    assert_equals "1" "$rc" )
 }
 
 run_config_tests() {
