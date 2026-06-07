@@ -166,6 +166,28 @@ run_apply_tests() {
   assert_contains "$log" "--dports 8080"
 }
 
+run_k3s_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+  iptables() { echo "iptables $*" >>"$log"; return 0; }
+  fw_rules_add "node - - - 10.0.0.1 master"
+  fw_rules_add "node - - - 10.0.0.2 agent"
+  : >"$log"
+  fw_build_k3s_input iptables FW-INPUT
+  assert_contains "$log" "-s 10.0.0.1 -p tcp -m multiport --dports 6443,10250,2379,2380 -j ACCEPT"
+  assert_contains "$log" "-s 10.0.0.2 -p udp -m multiport --dports 8472 -j ACCEPT"
+  assert_contains "$log" "-s 10.42.0.0/16 -j ACCEPT"
+  assert_contains "$log" "-i cni0 -j ACCEPT"
+  assert_contains "$log" "fw-managed:k3s"
+
+  ( export FW_RP_FILTER_PATH="${temp_root}/rpf"; echo 0 >"$FW_RP_FILTER_PATH"
+    grep -Fq "rp_filter=0" <<<"$(fw_check_rp_filter 2>&1)" || fail "expected rp_filter warning" )
+  ( export FW_RP_FILTER_PATH="${temp_root}/rpf2"; echo 1 >"$FW_RP_FILTER_PATH"
+    [[ -z "$(fw_check_rp_filter 2>&1)" ]] || fail "expected no warning when rp_filter=1" )
+}
+
 run_docker_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   local log="${temp_root}/ipt.log"
@@ -209,7 +231,8 @@ main() {
     lockout) run_lockout_tests ;;
     apply) run_apply_tests ;;
     docker) run_docker_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests ;;
+    k3s) run_k3s_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
