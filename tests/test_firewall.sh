@@ -166,6 +166,21 @@ run_apply_tests() {
   assert_contains "$log" "--dports 8080"
 }
 
+run_docker_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+  iptables() { echo "iptables $*" >>"$log"; return 0; }
+  fw_rules_add "docker allow tcp 6379 10.0.0.5 redis"
+  : >"$log"
+  fw_build_docker iptables FW-DOCKER-NEW
+  assert_order "$log" "ESTABLISHED,RELATED -j RETURN" "fw-managed:docker"
+  assert_order "$log" "--ctorigdstport 6379 -s 10.0.0.5 -j RETURN" "ctstate DNAT -j DROP"
+  assert_contains "$log" "fw-managed:docker-default"
+  assert_contains "$log" "ctstate DNAT -j DROP"
+}
+
 run_lockout_tests() {
   load_firewall
   ( export SSH_CONNECTION="1.2.3.4 51000 5.6.7.8 22022"
@@ -193,7 +208,8 @@ main() {
     swap) run_swap_tests ;;
     lockout) run_lockout_tests ;;
     apply) run_apply_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests ;;
+    docker) run_docker_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
