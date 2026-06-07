@@ -107,9 +107,9 @@ pg_query() {
 
 # 只读检测
 pg_assert_writable() {
-  if [[ "$(pg_query postgres 'SELECT pg_is_in_recovery();')" == "t" ]]; then
-    echo "当前为 standby,请在 leader 上运行写操作。" >&2; return 1
-  fi
+  local r; r="$(pg_query postgres 'SELECT pg_is_in_recovery();')"
+  if [[ -z "$r" ]]; then echo "无法确认主从状态(连接异常?),已中止。" >&2; return 1; fi
+  if [[ "$r" == "t" ]]; then echo "当前为 standby,请在 leader 上运行写操作。" >&2; return 1; fi
   return 0
 }
 

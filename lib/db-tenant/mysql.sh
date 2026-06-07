@@ -111,9 +111,8 @@ mysql_query() {
 # 只读检测
 mysql_assert_writable() {
   local r; r="$(mysql_query 'SELECT @@global.super_read_only + @@global.read_only;')"
-  if [[ -n "$r" && "$r" != "0" ]]; then
-    echo "当前为只读(replica),请在 primary 上运行写操作。" >&2; return 1
-  fi
+  if [[ -z "$r" ]]; then echo "无法确认主从状态(连接异常?),已中止。" >&2; return 1; fi
+  if [[ "$r" != "0" ]]; then echo "当前为只读(replica),请在 primary 上运行写操作。" >&2; return 1; fi
   return 0
 }
 
@@ -219,6 +218,7 @@ mysql_create_tenant() {
   fi
 }
 
+# 列出非系统账号及其限额(仅账号+限额;不展示绑定库)
 mysql_list_tenants() { mysql_build_list_sql "${DB_TENANT_MYSQL_SYSTEM_USERS}" | mysql_exec_sql; }
 
 mysql_set_limit() {

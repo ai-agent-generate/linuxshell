@@ -34,12 +34,12 @@ db_tenant_backup_action() {
 db_tenant_dispatch() {
   local engine="$1" action="$2"
   case "$action" in
-    1) ${engine}_create_tenant ;;
+    1) db_tenant_with_lock ${engine}_create_tenant ;;
     2) ${engine}_list_tenants ;;
-    3) ${engine}_set_limit ;;
-    4) ${engine}_set_password ;;
+    3) db_tenant_with_lock ${engine}_set_limit ;;
+    4) db_tenant_with_lock ${engine}_set_password ;;
     5) db_tenant_backup_action "$engine" ;;
-    6) db_tenant_drop_action "$engine" ;;
+    6) db_tenant_with_lock db_tenant_drop_action "$engine" ;;
     *) echo "未知动作: $action" >&2; return 1 ;;
   esac
 }

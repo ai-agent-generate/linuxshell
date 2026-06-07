@@ -349,6 +349,16 @@ run_pg_safety_tests() {
     out="$(pg_drop_tenant acme acme 2>/dev/null)" && rc=0 || rc=$?
     [[ "$rc" -ne 0 ]] || fail "pg drop must return non-zero when exec fails"
     assert_str_missing "$out" "已删除" )
+
+  # pg_assert_writable fail-closed:查询为空->中止;f->可写;t->standby 中止
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    pg_query() { echo ""; }
+    if pg_assert_writable 2>/dev/null; then fail "pg_assert_writable must fail-closed on empty"; fi
+    pg_query() { echo "f"; }
+    pg_assert_writable || fail "pg_assert_writable should pass when not in recovery"
+    pg_query() { echo "t"; }
+    if pg_assert_writable 2>/dev/null; then fail "pg_assert_writable must fail on standby"; fi )
 }
 
 run_mysql_safety_tests() {
@@ -449,6 +459,16 @@ run_mysql_safety_tests() {
     out="$(mysql_drop_tenant acme '%' acme 2>/dev/null)" && rc=0 || rc=$?
     [[ "$rc" -ne 0 ]] || fail "mysql drop must return non-zero when exec fails"
     assert_str_missing "$out" "已删除" )
+
+  # mysql_assert_writable fail-closed:空->中止;0->可写;1->只读中止
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    mysql_query() { echo ""; }
+    if mysql_assert_writable 2>/dev/null; then fail "mysql_assert_writable must fail-closed on empty"; fi
+    mysql_query() { echo "0"; }
+    mysql_assert_writable || fail "mysql_assert_writable should pass when writable"
+    mysql_query() { echo "1"; }
+    if mysql_assert_writable 2>/dev/null; then fail "mysql_assert_writable must fail on read-only"; fi )
 }
 
 run_action_tests() {
@@ -587,6 +607,28 @@ run_dispatch_tests() {
     assert_str_contains "$out" "R4"
     assert_str_contains "$out" "R5 acme"
     assert_str_contains "$out" "R6 acme acme" )
+
+  # 写动作经 flock 串行化(db_tenant_with_lock 包裹),读动作不加锁
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    source "${ROOT_DIR}/lib/db-tenant/mysql.sh"; source "${ROOT_DIR}/lib/db-tenant/main.sh"
+    : >"$log"
+    db_tenant_with_lock() { echo "LOCKED $1" >>"$log"; "$@"; }
+    pg_create_tenant() { echo "ran_create" >>"$log"; }
+    pg_set_limit() { echo "ran_setlimit" >>"$log"; }
+    pg_set_password() { echo "ran_setpw" >>"$log"; }
+    pg_list_tenants() { echo "ran_list" >>"$log"; }
+    db_tenant_backup_action() { echo "ran_backup" >>"$log"; }
+    db_tenant_drop_action() { echo "ran_drop" >>"$log"; }
+    db_tenant_dispatch pg 1; db_tenant_dispatch pg 2; db_tenant_dispatch pg 3
+    db_tenant_dispatch pg 4; db_tenant_dispatch pg 5; db_tenant_dispatch pg 6
+    out="$(cat "$log")"
+    assert_str_contains "$out" "LOCKED pg_create_tenant"
+    assert_str_contains "$out" "LOCKED pg_set_limit"
+    assert_str_contains "$out" "LOCKED pg_set_password"
+    assert_str_contains "$out" "LOCKED db_tenant_drop_action"
+    assert_str_missing "$out" "LOCKED pg_list_tenants"
+    assert_str_missing "$out" "LOCKED db_tenant_backup_action" )
 }
 
 run_docs_tests() {
