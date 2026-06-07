@@ -33,13 +33,15 @@ mysql_build_drop_sql() {
   return 0
 }
 
-# 列出非系统账号及其限额(库映射在编排层用 mysql.db 关联)
+# 列出账号及其限额。$1=空格分隔的系统用户 denylist(可空,空则不加过滤)
 mysql_build_list_sql() {
-  cat <<'SQL'
-SELECT user, host, max_user_connections, max_connections, max_questions, max_updates
-FROM mysql.user
-ORDER BY user, host;
-SQL
+  local list="${1:-}" notin="" u
+  for u in $list; do notin="${notin:+$notin,}'${u}'"; done
+  if [[ -n "$notin" ]]; then
+    printf 'SELECT user, host, max_user_connections, max_connections, max_questions, max_updates FROM mysql.user WHERE user NOT IN (%s) ORDER BY user, host;\n' "$notin"
+  else
+    printf 'SELECT user, host, max_user_connections, max_connections, max_questions, max_updates FROM mysql.user ORDER BY user, host;\n'
+  fi
 }
 
 # 探测目标,设置 MYSQL_TARGET_MODE=docker|local
@@ -217,11 +219,7 @@ mysql_create_tenant() {
   fi
 }
 
-mysql_list_tenants() {
-  local notin="" u
-  for u in ${DB_TENANT_MYSQL_SYSTEM_USERS}; do notin="${notin:+$notin,}'${u}'"; done
-  printf "SELECT user, host, max_user_connections, max_connections, max_questions, max_updates FROM mysql.user WHERE user NOT IN (%s) ORDER BY user, host;\n" "$notin" | mysql_exec_sql
-}
+mysql_list_tenants() { mysql_build_list_sql "${DB_TENANT_MYSQL_SYSTEM_USERS}" | mysql_exec_sql; }
 
 mysql_set_limit() {
   local user; user="$(prompt_with_default "租户名(用户)" "")"; db_tenant_validate_identifier "$user" 32 || return 1

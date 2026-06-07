@@ -241,6 +241,9 @@ run_mysql_sql_tests() {
   sql="$(mysql_build_list_sql)"
   assert_str_contains "$sql" "FROM mysql.user"
   assert_str_contains "$sql" "max_user_connections"
+  assert_str_missing "$sql" "NOT IN"
+  sql="$(mysql_build_list_sql "root sys")"
+  assert_str_contains "$sql" "NOT IN ('root','sys')"
 }
 
 run_pg_safety_tests() {
@@ -484,6 +487,57 @@ run_action_tests() {
     prompt_with_default() { echo "${2:-}"; }
     mysql_create_tenant acme
     assert_contains "$log" "CREATE USER 'acme'@'%' IDENTIFIED BY" )
+
+  # PG create:全新租户 -> CREATE ROLE + CREATE DATABASE + REVOKE PUBLIC
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_role_exists() { echo 0; }
+    pg_db_exists() { echo 0; }
+    pg_query() { echo ""; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "${2:-}"; }
+    pg_create_tenant acme
+    assert_contains "$log" "CREATE ROLE \"acme\" LOGIN PASSWORD"
+    assert_contains "$log" "CREATE DATABASE \"acme\" OWNER \"acme\""
+    assert_contains "$log" "REVOKE CONNECT ON DATABASE \"acme\" FROM PUBLIC;" )
+
+  # PG set_limit:回填现有连接上限(50)
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_query() { echo "50"; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { if [[ -z "${2:-}" ]]; then echo "acme"; else echo "$2"; fi; }
+    pg_set_limit
+    assert_contains "$log" "ALTER ROLE \"acme\" CONNECTION LIMIT 50;" )
+
+  # MySQL create:已存在用户 -> ALTER USER ... WITH(回填 muc=7),不出现 CREATE USER
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_user_exists() { echo 1; }
+    mysql_db_exists() { echo 1; }
+    mysql_query() { echo "7"; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "${2:-}"; }
+    mysql_create_tenant acme
+    assert_contains "$log" "ALTER USER 'acme'@'%' WITH MAX_USER_CONNECTIONS 7"
+    assert_not_contains "$log" "CREATE USER 'acme'@'%'" )
+
+  # MySQL set_limit:回填现有 muc(9)
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_query() { echo "9"; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { if [[ -z "${2:-}" ]]; then echo "acme"; else echo "$2"; fi; }
+    mysql_set_limit
+    assert_contains "$log" "ALTER USER 'acme'@'%' WITH MAX_USER_CONNECTIONS 9" )
 }
 
 main() {
