@@ -39,6 +39,7 @@ load_linuxshell_modules \
   lib/firewall/rules.sh \
   lib/firewall/docker.sh \
   lib/firewall/k3s.sh \
+  lib/firewall/trust.sh \
   lib/firewall/service.sh \
   lib/firewall/menu.sh \
   lib/firewall/main.sh

@@ -22,6 +22,7 @@ fw_build_input() {  # $1=iptables $2=chain
   for p in $(fw_detect_ssh_ports); do
     "$ipt" -A "$c" -p tcp --dport "$p" -j ACCEPT -m comment --comment "fw-managed:ssh-guard"
   done
+  fw_build_trust_input "$ipt" "$c"
   fw_build_k3s_input "$ipt" "$c"
   fw_build_host_rules "$ipt" "$c"
 }
@@ -37,6 +38,7 @@ fw_build_input6() {  # $1=ip6tables $2=chain
   for p in $(fw_detect_ssh_ports); do
     "$ipt" -A "$c" -p tcp --dport "$p" -j ACCEPT -m comment --comment "fw-managed:ssh-guard"
   done
+  fw_build_trust_input "$ipt" "$c"
   fw_build_k3s_input "$ipt" "$c"
   fw_build_host_rules "$ipt" "$c"
 }

@@ -20,11 +20,12 @@ fw_disable() {  # $1=可选时长(如 30m)
 }
 
 fw_status() {
-  local policy jump="no" count
+  local policy jump="no" count tcount
   policy="$(iptables -nL INPUT 2>/dev/null | awk 'NR==1{print $4}' | tr -d '()')"
   iptables -C INPUT -j "$FW_INPUT_CHAIN" 2>/dev/null && jump="yes"
   count="$(fw_rules_read | wc -l | tr -d ' ')"
-  echo "INPUT policy: ${policy:-unknown} | FW-INPUT 跳转: ${jump} | 规则: ${count} 条"
+  tcount="$(fw_trust_ips | wc -l | tr -d ' ')"
+  echo "INPUT policy: ${policy:-unknown} | FW-INPUT 跳转: ${jump} | 规则: ${count} 条 | 信任IP: ${tcount} 个"
   if [[ "$policy" == "ACCEPT" || "$jump" == "no" ]]; then
     echo "⚠️ 防火墙当前已禁用,全端口暴露!请尽快 'fw apply'。" >&2
   fi
@@ -73,6 +74,17 @@ fw_menu_add_node() {
   fw_apply; echo "已添加并应用。"
 }
 
+fw_menu_add_trust() {
+  echo "⚠️ 信任 IP 将对该地址放行全部端口(主机 + 所有 Docker 容器端口 + 全协议)。"
+  local ip comment
+  ip="$(prompt_with_default "信任的单个 IP(IPv4 或 IPv6,不支持网段)" "")"
+  fw_validate_trust_ip "$ip" || { echo "IP 非法(需单个 IP,不支持 any / 网段)"; return; }
+  prompt_yes_no "确认对 ${ip} 开放全部端口?" "n" || { echo "已取消。"; return; }
+  comment="$(prompt_with_default "备注" "")"
+  fw_rules_add "trust - - - ${ip} ${comment}"
+  fw_apply; echo "已添加并应用。"
+}
+
 fw_menu_delete() {
   fw_menu_list
   local num
@@ -110,11 +122,11 @@ firewall_menu() {
     cat <<'EOF'
 
 ==== linuxshell 防火墙管理 ====
- 1) 查看所有规则         5) 删除规则(按编号)
- 2) 添加主机入站规则     6) 重新应用规则(apply)
- 3) 添加 Docker 端口放行  7) 启用/临时禁用防火墙
- 4) 管理 k3s 节点         8) 备份/恢复配置
- 0) 退出
+ 1) 查看所有规则           6) 删除规则(按编号)
+ 2) 添加主机入站规则       7) 重新应用规则(apply)
+ 3) 添加 Docker 端口放行   8) 启用/临时禁用防火墙
+ 4) 管理 k3s 节点          9) 备份/恢复配置
+ 5) 添加信任 IP(全端口)   0) 退出
 EOF
     read -r -p "选择: " choice
     case "$choice" in
@@ -122,10 +134,11 @@ EOF
       2) fw_menu_add_host ;;
       3) fw_menu_add_docker ;;
       4) fw_menu_add_node ;;
-      5) fw_menu_delete ;;
-      6) fw_apply; echo "已重新应用。" ;;
-      7) fw_menu_toggle ;;
-      8) fw_menu_backup ;;
+      5) fw_menu_add_trust ;;
+      6) fw_menu_delete ;;
+      7) fw_apply; echo "已重新应用。" ;;
+      8) fw_menu_toggle ;;
+      9) fw_menu_backup ;;
       0) return 0 ;;
       *) echo "无效选择。" ;;
     esac

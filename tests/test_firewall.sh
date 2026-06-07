@@ -33,6 +33,7 @@ load_firewall() {
   source "${ROOT_DIR}/lib/firewall/rules.sh"
   source "${ROOT_DIR}/lib/firewall/docker.sh"
   source "${ROOT_DIR}/lib/firewall/k3s.sh"
+  source "${ROOT_DIR}/lib/firewall/trust.sh"
   source "${ROOT_DIR}/lib/firewall/service.sh"
   source "${ROOT_DIR}/lib/firewall/menu.sh"
   source "${ROOT_DIR}/lib/firewall/main.sh"
@@ -47,7 +48,7 @@ run_skeleton_tests() {
   assert_contains "$entry" "lib/firewall/main.sh"
 
   local m
-  for m in config common rules docker k3s service menu main; do
+  for m in config common rules docker k3s trust service menu main; do
     assert_file_exists "${ROOT_DIR}/lib/firewall/${m}.sh"
     bash -n "${ROOT_DIR}/lib/firewall/${m}.sh" || fail "syntax error: lib/firewall/${m}.sh"
     assert_contains "$entry" "lib/firewall/${m}.sh"
@@ -61,6 +62,7 @@ run_skeleton_tests() {
             fw_build_input fw_build_input6 fw_build_host_rules fw_apply \
             fw_build_docker fw_build_docker6 fw_docker_allow_rules fw_docker_in_ip6 fw_docker_scan \
             fw_build_k3s_input fw_k3s_node_ips fw_check_rp_filter \
+            fw_trust_ips fw_validate_trust_ip fw_build_trust_input fw_build_trust_docker fw_menu_add_trust \
             fw_write_service fw_write_command fw_install_modules \
             firewall_menu fw_disable fw_enable fw_status \
             firewall_main fw_cli; do
@@ -248,12 +250,14 @@ run_service_tests() {
   assert_mode "$FW_BIN" "755"
   assert_contains "$FW_BIN" "linuxshell-common.sh"
   assert_contains "$FW_BIN" 'fw_cli "$@"'
+  assert_contains "$FW_BIN" "k3s trust service"
   bash -n "$FW_BIN" || fail "generated fw has syntax errors"
 
   export LINUXSHELL_MODULE_ROOT="$ROOT_DIR"
   fw_install_modules
   assert_file_exists "${FW_LIB_DIR}/common.sh"
   assert_file_exists "${FW_LIB_DIR}/linuxshell-common.sh"
+  assert_file_exists "${FW_LIB_DIR}/trust.sh"
   assert_mode "${FW_LIB_DIR}/common.sh" "644"
 }
 
@@ -316,6 +320,7 @@ run_docs_tests() {
   assert_contains "$readme" "DOCKER-USER"
   assert_contains "$readme" "deny-by-default"
   assert_contains "$readme" "10.42.0.0/16"
+  assert_contains "$readme" "信任 IP"
 }
 
 run_disable_tests() {
@@ -369,6 +374,98 @@ run_lockout_tests() {
   )
 }
 
+run_trust_input_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  export FW_SSH_PORT=22
+  load_firewall
+  iptables() { echo "iptables $*" >>"$log"; return 0; }
+  ip6tables() { echo "ip6tables $*" >>"$log"; return 0; }
+  command_exists() { case "$1" in sshd) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  fw_rules_add "trust - - - 203.0.113.10 office"
+  fw_rules_add "trust - - - 2001:db8::1 jump"
+  fw_rules_add "node - - - 10.0.0.1 master"
+
+  # IPv4 入站链:含 v4 信任 IP,排除 v6 信任 IP;顺序 ssh-guard → trust → k3s
+  : >"$log"
+  ( unset SSH_CONNECTION; fw_build_input iptables FW-INPUT )
+  assert_contains "$log" "-s 203.0.113.10 -j ACCEPT"
+  assert_contains "$log" "fw-managed:trust"
+  assert_not_contains "$log" "2001:db8::1"
+  assert_order "$log" "fw-managed:ssh-guard" "fw-managed:trust"
+  assert_order "$log" "fw-managed:trust" "fw-managed:k3s"
+
+  # IPv6 入站链:含 v6 信任 IP,排除 v4 信任 IP
+  : >"$log"
+  ( unset SSH_CONNECTION; fw_build_input6 ip6tables FW-INPUT6 )
+  assert_contains "$log" "-s 2001:db8::1 -j ACCEPT"
+  assert_order "$log" "fw-managed:ssh-guard" "fw-managed:trust"
+  assert_not_contains "$log" "203.0.113.10"
+}
+
+run_trust_docker_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+  iptables() { echo "iptables $*" >>"$log"; return 0; }
+  fw_rules_add "trust - - - 203.0.113.10 office"
+  fw_rules_add "docker allow tcp 6379 10.0.0.5 redis"
+  : >"$log"
+  fw_build_docker iptables FW-DOCKER-NEW
+  # 信任 IP 的 DNAT RETURN 在 established 之后、deny-by-default DROP 之前
+  assert_contains "$log" "-s 203.0.113.10 -m conntrack --ctstate DNAT -j RETURN"
+  assert_contains "$log" "fw-managed:trust-docker"
+  assert_order "$log" "ESTABLISHED,RELATED -j RETURN" "fw-managed:trust-docker"
+  assert_order "$log" "fw-managed:trust-docker" "ctstate DNAT -j DROP"
+
+  # 地址族过滤:v6 信任 IP 不写入 iptables(v4) 链
+  fw_rules_add "trust - - - 2001:db8::1 jump"
+  : >"$log"
+  fw_build_docker iptables FW-DOCKER-NEW
+  assert_not_contains "$log" "2001:db8::1"
+  # ip6tables(v6) 链含 v6 信任 IP、排除 v4 信任 IP
+  ip6tables() { echo "ip6tables $*" >>"$log"; return 0; }
+  : >"$log"
+  fw_build_docker6 ip6tables FW-DOCKER6-NEW
+  assert_contains "$log" "-s 2001:db8::1 -m conntrack --ctstate DNAT -j RETURN"
+  assert_not_contains "$log" "203.0.113.10"
+}
+
+run_trust_status_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+  iptables() { case "$1" in -nL) echo "Chain INPUT (policy DROP)" ;; -C) return 0 ;; esac; return 0; }
+  fw_rules_add "trust - - - 203.0.113.10 office"
+  fw_rules_add "trust - - - 198.51.100.7 vpn"
+  grep -Fq "信任IP: 2" <<<"$(fw_status 2>&1)" || fail "expected trust ip count in status"
+}
+
+run_trust_validate_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+
+  # 单个 IPv4/IPv6 通过
+  fw_validate_trust_ip 203.0.113.10 || fail "single ipv4 should pass"
+  fw_validate_trust_ip "2001:db8::1" || fail "single ipv6 should pass"
+  # any / 网段 / 畸形 一律拒绝
+  if fw_validate_trust_ip any 2>/dev/null; then fail "any should fail"; fi
+  if fw_validate_trust_ip 10.0.0.0/24 2>/dev/null; then fail "ipv4 cidr should fail"; fi
+  if fw_validate_trust_ip "2001:db8::/32" 2>/dev/null; then fail "ipv6 cidr should fail"; fi
+  if fw_validate_trust_ip "::/0" 2>/dev/null; then fail "ipv6 default route cidr should fail"; fi
+  if fw_validate_trust_ip garbage 2>/dev/null; then fail "garbage should fail"; fi
+
+  # fw_trust_ips 只读 trust 行
+  fw_rules_add "host allow tcp 22 any SSH"
+  fw_rules_add "trust - - - 203.0.113.10 office"
+  fw_rules_add "trust - - - 2001:db8::1 jump"
+  assert_equals "203.0.113.10" "$(fw_trust_ips | head -1)"
+  assert_equals "2" "$(fw_trust_ips | wc -l | tr -d ' ')"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -378,6 +475,10 @@ main() {
     rulesfile) run_rulesfile_tests ;;
     swap) run_swap_tests ;;
     lockout) run_lockout_tests ;;
+    trust_validate) run_trust_validate_tests ;;
+    trust_input) run_trust_input_tests ;;
+    trust_docker) run_trust_docker_tests ;;
+    trust_status) run_trust_status_tests ;;
     apply) run_apply_tests ;;
     docker) run_docker_tests ;;
     k3s) run_k3s_tests ;;
@@ -387,7 +488,7 @@ main() {
     orchestration) run_orchestration_tests ;;
     failopen) run_failopen_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_trust_validate_tests; run_trust_input_tests; run_trust_docker_tests; run_trust_status_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
