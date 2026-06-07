@@ -173,6 +173,21 @@ run_status_skeleton_tests() {
   bash -n "${ROOT_DIR}/lib/mysql-ha/status.sh" || fail "mysql-ha/status.sh syntax error"
 }
 
+run_status_readonly_tests() {
+  local f files="${ROOT_DIR}/lib/status-common.sh ${ROOT_DIR}/lib/mysql-ha/status.sh ${ROOT_DIR}/status-mysql-ha.sh"
+  _no() { if grep -nE "$2" "$1" >/dev/null 2>&1; then grep -nE "$2" "$1" >&2; fail "$3 in $1"; fi; }
+  for f in $files; do
+    [[ -e "$f" ]] || continue
+    _no "$f" 'systemctl[[:space:]]+(start|stop|restart|reload|enable|disable|mask|kill)' "service-control write"
+    _no "$f" 'etcdctl[^|]*(put|del|txn|user |role |auth |move-leader|snapshot|defrag)' "etcdctl write subcommand"
+    _no "$f" '(INSERT |UPDATE |DELETE |DROP |ALTER |CREATE |GRANT |REVOKE |TRUNCATE |SET +GLOBAL|FLUSH |RESET |STOP +REPLICA|START +REPLICA|CHANGE +REPLICATION)' "SQL write"
+    _no "$f" 'curl[^|]*(-X +(POST|PUT|DELETE|PATCH)|--request)' "HTTP write"
+    _no "$f" 'curl[^|]*(-u |--user )' "plaintext curl credential"
+    _no "$f" 'mysql[^|]*[[:space:]]-p[^[:space:]]' "plaintext mysql password"
+  done
+  assert_contains "${ROOT_DIR}/lib/status-common.sh" "curl -K"
+}
+
 run_config_tests() {
   ( unset DATA_ROOT MYSQL_HA_DATADIR MYSQL_HA_ORCH_DATADIR
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"
@@ -573,6 +588,7 @@ main() {
   case "$suite" in
     mysql_status) run_mysql_status_tests ;;
     status_skeleton) run_status_skeleton_tests ;;
+    status_readonly) run_status_readonly_tests ;;
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
@@ -583,7 +599,7 @@ main() {
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
     docs) run_docs_tests ;;
-    all) run_mysql_status_tests; run_skeleton_tests; run_status_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_mysql_status_tests; run_skeleton_tests; run_status_skeleton_tests; run_status_readonly_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

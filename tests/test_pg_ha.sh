@@ -751,6 +751,24 @@ run_ha_status_entry_tests() {
     local out; out="$(ha_status_dispatch pg)"; assert_equals "PGMAIN" "$out" )
 }
 
+run_status_readonly_tests() {
+  local f files="${ROOT_DIR}/lib/status-common.sh ${ROOT_DIR}/lib/pg-ha/status.sh ${ROOT_DIR}/status-pg-ha.sh ${ROOT_DIR}/ha-status.sh"
+  _no() { if grep -nE "$2" "$1" >/dev/null 2>&1; then grep -nE "$2" "$1" >&2; fail "$3 in $1"; fi; }
+  for f in $files; do
+    [[ -e "$f" ]] || continue
+    _no "$f" 'systemctl[[:space:]]+(start|stop|restart|reload|enable|disable|mask|kill)' "service-control write"
+    _no "$f" 'patronictl[^|]*(switchover|failover|edit-config|remove|reinit|restart|reload|pause|resume)' "patronictl write subcommand"
+    _no "$f" 'etcdctl[^|]*(put|del|txn|user |role |auth |move-leader|snapshot|defrag)' "etcdctl write subcommand"
+    _no "$f" '(INSERT |UPDATE |DELETE |DROP |ALTER |CREATE |GRANT |REVOKE |TRUNCATE |SET +GLOBAL|FLUSH |RESET |STOP +REPLICA|START +REPLICA|CHANGE +REPLICATION|pg_promote|pg_terminate_backend)' "SQL write"
+    _no "$f" 'curl[^|]*(-X +(POST|PUT|DELETE|PATCH)|--request)' "HTTP write"
+    _no "$f" 'curl[^|]*(-u |--user )' "plaintext curl credential"
+    _no "$f" 'mysql[^|]*[[:space:]]-p[^[:space:]]' "plaintext mysql password"
+    _no "$f" 'etcdctl[^|]*--user=' "plaintext etcdctl credential"
+    _no "$f" '>[[:space:]]*/(etc|data|var|usr|run)/' "write to system path"
+  done
+  assert_contains "${ROOT_DIR}/lib/status-common.sh" "curl -K"
+}
+
 run_docs_tests() {
   local readme="${ROOT_DIR}/README.md"
   assert_contains "$readme" "install-pg-ha.sh"
@@ -790,6 +808,7 @@ main() {
     skeleton) run_skeleton_tests ;;
     status_skeleton) run_status_skeleton_tests ;;
     ha_entry) run_ha_status_entry_tests ;;
+    status_readonly) run_status_readonly_tests ;;
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
     etcd) run_etcd_tests ;;
@@ -798,7 +817,7 @@ main() {
     orchestration) run_orchestration_tests ;;
     pg_status) run_pg_status_tests ;;
     docs) run_docs_tests ;;
-    all) run_status_common_tests; run_skeleton_tests; run_status_skeleton_tests; run_ha_status_entry_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_status_common_tests; run_skeleton_tests; run_status_skeleton_tests; run_ha_status_entry_tests; run_status_readonly_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
