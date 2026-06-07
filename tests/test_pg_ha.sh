@@ -636,14 +636,41 @@ run_pg_status_tests() {
 
   assert_function_exists pg_ha_status_ingress
 
-  # 磁盘:使用率超 CRIT 线 -> CRIT
+  # 磁盘:使用率超 CRIT 线 -> CRIT（quorum 节点，无 inactive 槽联动）
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
     PG_HA_DETECTED_ROLE=quorum
     export PG_HA_ETCD_DATA="${tdir}"   # 存在的目录
     df() { printf 'Filesystem 1K-blocks Used Avail Use%% Mounted\n/dev/x 100 95 5 95%% /\n'; }
+    pg_ha_status_local_psql() { echo "0"; }   # quorum 不走复制槽分支，但防止误调时产生额外计数
     status_reset; pg_ha_status_disk
-    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+    assert_equals "1" "${STATUS_CRIT_COUNT}"
+    assert_equals "0" "${STATUS_WARN_COUNT}" )
+
+  # 磁盘:primary + 磁盘使用率超 WARN + inactive 槽 > 0 -> 联动 CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_PGDATA="${tdir}" PG_HA_ETCD_DATA="${tdir}"
+    export STATUS_DISK_WARN_PCT=80 STATUS_DISK_CRIT_PCT=90
+    df() { printf 'Filesystem 1K-blocks Used Avail Use%% Mounted\n/dev/x 100 85 15 85%% /\n'; }
+    pg_ha_status_local_psql() { echo "2"; }   # 2 个 inactive 槽
+    status_reset; pg_ha_status_disk
+    # 85% >= WARN -> 磁盘 WARN(2 个分区所以2次) + 联动 CRIT 1
+    assert_equals "1" "${STATUS_CRIT_COUNT}"
+    [[ "${STATUS_WARN_COUNT}" -ge 1 ]] || fail "expected at least 1 WARN for disk usage" )
+
+  # 磁盘:primary + 磁盘使用率低于 WARN + inactive 槽 > 0 -> disk 不报 WARN/CRIT（由 degradation 负责）
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_PGDATA="${tdir}" PG_HA_ETCD_DATA="${tdir}"
+    export STATUS_DISK_WARN_PCT=80 STATUS_DISK_CRIT_PCT=90
+    df() { printf 'Filesystem 1K-blocks Used Avail Use%% Mounted\n/dev/x 100 60 40 60%% /\n'; }
+    pg_ha_status_local_psql() { echo "3"; }   # 3 个 inactive 槽，但磁盘正常
+    status_reset; pg_ha_status_disk
+    assert_equals "0" "${STATUS_CRIT_COUNT}"
+    assert_equals "0" "${STATUS_WARN_COUNT}" )
 
   # 连接数:超 WARN 线 -> WARN
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"

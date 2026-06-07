@@ -245,20 +245,31 @@ pg_ha_status_splitbrain() {
 
 pg_ha_status_disk() {
   status_section "磁盘与数据目录"
-  local dirs="${PG_HA_ETCD_DATA}" d pct
+  local dirs="${PG_HA_ETCD_DATA}" d pct disk_high=0
   [[ "${PG_HA_DETECTED_ROLE}" != "quorum" ]] && dirs="${PG_HA_PGDATA} ${PG_HA_ETCD_DATA}"
   for d in $dirs; do
     [[ -e "$d" ]] || { status_info "磁盘 $d" "目录不存在，跳过"; continue; }
     pct="$(df -P "$d" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')"
     [[ "$pct" =~ ^[0-9]+$ ]] || { status_warn "磁盘 $d" "无法获取使用率"; continue; }
-    if [[ "$pct" -ge "${STATUS_DISK_CRIT_PCT}" ]]; then status_crit "磁盘 $d" "${pct}% (>=${STATUS_DISK_CRIT_PCT}%)"
-    elif [[ "$pct" -ge "${STATUS_DISK_WARN_PCT}" ]]; then status_warn "磁盘 $d" "${pct}% (>=${STATUS_DISK_WARN_PCT}%)"
-    else status_ok "磁盘 $d" "${pct}%"; fi
+    if [[ "$pct" -ge "${STATUS_DISK_CRIT_PCT}" ]]; then
+      status_crit "磁盘 $d" "${pct}% (>=${STATUS_DISK_CRIT_PCT}%)"
+      disk_high=1
+    elif [[ "$pct" -ge "${STATUS_DISK_WARN_PCT}" ]]; then
+      status_warn "磁盘 $d" "${pct}% (>=${STATUS_DISK_WARN_PCT}%)"
+      disk_high=1
+    else
+      status_ok "磁盘 $d" "${pct}%"
+    fi
   done
-  if [[ "${PG_HA_DETECTED_ROLE}" == "primary" ]]; then
+  # 复制槽联动升级：仅当 primary 且磁盘已超 WARN 线时，inactive 槽才在这里升 CRIT
+  # （磁盘正常时 inactive 槽由 pg_ha_status_degradation 报 WARN，避免重复）
+  if [[ "${PG_HA_DETECTED_ROLE}" == "primary" ]] && [[ "$disk_high" -eq 1 ]]; then
     local n; n="$(pg_ha_status_local_psql "SELECT count(*) FROM pg_replication_slots WHERE active=false")"
-    [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -gt 0 ]] && status_warn "WAL 堆积风险" "存在 ${n} 个 inactive 复制槽，WAL 将持续堆积"
+    if [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -gt 0 ]]; then
+      status_crit "WAL 堆积风险" "存在 ${n} 个 inactive 复制槽且数据盘使用率已超 ${STATUS_DISK_WARN_PCT}%，WAL 持续堆积将撑爆磁盘"
+    fi
   fi
+  return 0
 }
 
 pg_ha_status_clock() {
@@ -296,11 +307,13 @@ pg_ha_status_config_audit() {
   for f in $files; do
     if [[ -e "$f" ]]; then status_ok "配置 $(basename "$f")" "存在"; else status_warn "配置 $(basename "$f")" "缺失"; fi
   done
-  for f in "${PG_HA_PATRONI_YAML}" "${PG_HA_HAPROXY_CFG}"; do
-    [[ -e "$f" ]] || continue
-    m="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || true)"
-    [[ "$m" == "600" ]] || status_warn "权限 $(basename "$f")" "期望 600 实际 ${m}"
-  done
+  if [[ "${PG_HA_DETECTED_ROLE}" != "quorum" ]]; then
+    for f in "${PG_HA_PATRONI_YAML}" "${PG_HA_HAPROXY_CFG}"; do
+      [[ -e "$f" ]] || continue
+      m="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || true)"
+      [[ "$m" == "600" ]] || status_warn "权限 $(basename "$f")" "期望 600 实际 ${m}"
+    done
+  fi
   for ip in "${PG_HA_NODE1_IP}" "${PG_HA_NODE2_IP}" "${PG_HA_NODE3_IP}"; do
     [[ -n "$ip" ]] || continue
     if pg_ha_check_connectivity "$ip" "${PG_HA_ETCD_CLIENT_PORT}"; then status_ok "连通 ${ip}:${PG_HA_ETCD_CLIENT_PORT}" "可达"
