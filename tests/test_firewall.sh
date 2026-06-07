@@ -370,6 +370,35 @@ run_lockout_tests() {
   )
 }
 
+run_trust_input_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  export FW_SSH_PORT=22
+  load_firewall
+  iptables() { echo "iptables $*" >>"$log"; return 0; }
+  ip6tables() { echo "ip6tables $*" >>"$log"; return 0; }
+  command_exists() { case "$1" in sshd) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  fw_rules_add "trust - - - 203.0.113.10 office"
+  fw_rules_add "trust - - - 2001:db8::1 jump"
+  fw_rules_add "node - - - 10.0.0.1 master"
+
+  # IPv4 入站链:含 v4 信任 IP,排除 v6 信任 IP;顺序 ssh-guard → trust → k3s
+  : >"$log"
+  ( unset SSH_CONNECTION; fw_build_input iptables FW-INPUT )
+  assert_contains "$log" "-s 203.0.113.10 -j ACCEPT"
+  assert_contains "$log" "fw-managed:trust"
+  assert_not_contains "$log" "2001:db8::1"
+  assert_order "$log" "fw-managed:ssh-guard" "fw-managed:trust"
+  assert_order "$log" "fw-managed:trust" "fw-managed:k3s"
+
+  # IPv6 入站链:含 v6 信任 IP,排除 v4 信任 IP
+  : >"$log"
+  ( unset SSH_CONNECTION; fw_build_input6 ip6tables FW-INPUT6 )
+  assert_contains "$log" "-s 2001:db8::1 -j ACCEPT"
+  assert_not_contains "$log" "203.0.113.10"
+}
+
 run_trust_validate_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
@@ -403,6 +432,7 @@ main() {
     swap) run_swap_tests ;;
     lockout) run_lockout_tests ;;
     trust_validate) run_trust_validate_tests ;;
+    trust_input) run_trust_input_tests ;;
     apply) run_apply_tests ;;
     docker) run_docker_tests ;;
     k3s) run_k3s_tests ;;
@@ -412,7 +442,7 @@ main() {
     orchestration) run_orchestration_tests ;;
     failopen) run_failopen_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_trust_validate_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_trust_validate_tests; run_trust_input_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

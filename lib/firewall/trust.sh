@@ -16,3 +16,13 @@ fw_validate_trust_ip() {
   [[ "$s" == */* ]] && return 1
   fw_validate_source "$s"
 }
+
+# FW-INPUT:对信任 IP 放行所有流量(全协议全端口),按地址族归类
+fw_build_trust_input() {  # $1=ipt $2=chain
+  local ipt="$1" c="$2" ip fam
+  for ip in $(fw_trust_ips); do
+    fam="$(fw_addr_family "$ip")"
+    case "$ipt:$fam" in iptables:6) continue ;; ip6tables:4) continue ;; esac
+    "$ipt" -A "$c" -s "$ip" -j ACCEPT -m comment --comment "fw-managed:trust"
+  done
+}
