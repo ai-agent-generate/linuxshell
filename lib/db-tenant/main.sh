@@ -82,7 +82,9 @@ MENU
     2) engine=mysql; mysql_detect_target; mysql_resolve_admin_password ;;
     *) echo "无效引擎" >&2; return 1 ;;
   esac
-  echo "目标形态: ${engine} / ${PG_TARGET_MODE:-${MYSQL_TARGET_MODE:-?}}" >&2
+  local mode
+  if [[ "$engine" == "pg" ]]; then mode="${PG_TARGET_MODE:-?}"; else mode="${MYSQL_TARGET_MODE:-?}"; fi
+  echo "目标形态: ${engine} / ${mode}" >&2
   if ! prompt_yes_no "确认对该目标操作?" "y"; then echo "已取消。" >&2; return 0; fi
   db_tenant_action_menu "$engine"
 }

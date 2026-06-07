@@ -564,6 +564,29 @@ run_dispatch_tests() {
     prompt_with_default() { if [[ -z "${2:-}" ]]; then echo "acme"; else echo "$2"; fi; }
     db_tenant_dispatch mysql 6
     assert_contains "$log" "mysql_drop acme % acme" )
+
+  # 全路由覆盖(pg 1..6 各映射到预期函数 + 未知动作返回非零)
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    source "${ROOT_DIR}/lib/db-tenant/mysql.sh"; source "${ROOT_DIR}/lib/db-tenant/main.sh"
+    : >"$log"
+    pg_create_tenant() { echo "R1" >>"$log"; }
+    pg_list_tenants() { echo "R2" >>"$log"; }
+    pg_set_limit() { echo "R3" >>"$log"; }
+    pg_set_password() { echo "R4" >>"$log"; }
+    pg_backup_tenant() { echo "R5 $*" >>"$log"; }
+    pg_drop_tenant() { echo "R6 $*" >>"$log"; }
+    prompt_with_default() { if [[ -z "${2:-}" ]]; then echo "acme"; else echo "$2"; fi; }
+    db_tenant_dispatch pg 1; db_tenant_dispatch pg 2; db_tenant_dispatch pg 3
+    db_tenant_dispatch pg 4; db_tenant_dispatch pg 5; db_tenant_dispatch pg 6
+    if db_tenant_dispatch pg 9 2>/dev/null; then fail "unknown action must return non-zero"; fi
+    out="$(cat "$log")"
+    assert_str_contains "$out" "R1"
+    assert_str_contains "$out" "R2"
+    assert_str_contains "$out" "R3"
+    assert_str_contains "$out" "R4"
+    assert_str_contains "$out" "R5 acme"
+    assert_str_contains "$out" "R6 acme acme" )
 }
 
 main() {
