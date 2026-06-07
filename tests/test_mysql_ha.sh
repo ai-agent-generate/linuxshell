@@ -125,6 +125,38 @@ run_mysql_status_tests() {
 
   assert_function_exists mysql_ha_status_topology
   assert_function_exists mysql_ha_status_ingress
+
+  # 磁盘:超 CRIT 线 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary; export MYSQL_HA_DATADIR="${tdir}"
+    df() { printf 'F 1K Used Avail Use%% M\n/dev/x 100 95 5 95%% /\n'; }
+    status_reset; mysql_ha_status_disk
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 连接数:超 WARN 线 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary
+    mysql_ha_status_local_sql() { case "$1" in *Threads_connected*) echo "Threads_connected	85" ;; *max_connections*) echo "max_connections	100" ;; esac; }
+    status_reset; mysql_ha_status_load
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+
+  # 编排:注入 CRIT -> 退出码 2
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    mysql_ha_status_load_topology() { :; }
+    mysql_ha_status_detect_role() { MYSQL_HA_DETECTED_ROLE=primary; }
+    mysql_ha_status_identity() { :; }; mysql_ha_status_services() { :; }; mysql_ha_status_topology() { :; }
+    mysql_ha_status_replication() { :; }; mysql_ha_status_degradation() { :; }; mysql_ha_status_ingress() { :; }
+    mysql_ha_status_splitbrain() { status_crit "injected"; }
+    mysql_ha_status_disk() { :; }; mysql_ha_status_clock() { :; }; mysql_ha_status_logs() { :; }
+    mysql_ha_status_config_audit() { :; }; mysql_ha_status_load() { :; }
+    local rc=0; mysql_ha_status_main >/dev/null || rc=$?
+    assert_equals "2" "$rc" )
+
+  assert_function_exists mysql_ha_status_clock
+  assert_function_exists mysql_ha_status_config_audit
 }
 
 run_config_tests() {

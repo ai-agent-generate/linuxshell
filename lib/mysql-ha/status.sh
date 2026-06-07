@@ -228,3 +228,106 @@ mysql_ha_status_splitbrain() {
   else status_warn "多主检测" "可达范围内未发现可写主(切换中或探测受限)"; fi
   status_info "说明" "单机视角在网络分区下看不到对侧；以 repman 仲裁为准"
 }
+
+mysql_ha_status_disk() {
+  status_section "磁盘与数据目录"
+  local dirs="" d pct
+  if [[ "${MYSQL_HA_DETECTED_ROLE}" == "arbiter" ]]; then dirs="${MYSQL_HA_REPMAN_DATADIR}"
+  else dirs="${MYSQL_HA_DATADIR}"; fi
+  for d in $dirs; do
+    [[ -e "$d" ]] || { status_info "磁盘 $d" "目录不存在，跳过"; continue; }
+    pct="$(df -P "$d" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')"
+    [[ "$pct" =~ ^[0-9]+$ ]] || { status_warn "磁盘 $d" "无法获取使用率"; continue; }
+    if [[ "$pct" -ge "${STATUS_DISK_CRIT_PCT}" ]]; then status_crit "磁盘 $d" "${pct}% (>=${STATUS_DISK_CRIT_PCT}%)"
+    elif [[ "$pct" -ge "${STATUS_DISK_WARN_PCT}" ]]; then status_warn "磁盘 $d" "${pct}% (>=${STATUS_DISK_WARN_PCT}%)"
+    else status_ok "磁盘 $d" "${pct}%"; fi
+  done
+}
+
+mysql_ha_status_clock() {
+  status_section "时钟同步"
+  if command_exists timedatectl; then
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q '^yes$'; then
+      status_ok "NTP" "已同步"
+    else
+      status_warn "NTP" "未同步(failover 决策时间敏感)"
+    fi
+  else
+    status_info "NTP" "timedatectl 不可用，跳过"
+  fi
+}
+
+mysql_ha_status_logs() {
+  status_section "关键日志摘要(最近 ${STATUS_LOG_LINES} 行 warning+)"
+  command_exists journalctl || { status_info "日志" "journalctl 不可用，跳过"; return 0; }
+  local svcs svc lines
+  if [[ "${MYSQL_HA_DETECTED_ROLE}" == "arbiter" ]]; then svcs="replication-manager"
+  else svcs="mysql haproxy mysqlchk@*"; fi
+  for svc in $svcs; do
+    lines="$(journalctl -u "$svc" -n "${STATUS_LOG_LINES}" -p warning --no-pager 2>/dev/null | status_redact || true)"
+    if [[ -n "$lines" ]]; then printf '  --- %s ---\n' "$svc"; printf '%s\n' "$lines" | sed 's/^/    /'
+    else status_ok "$svc 日志" "近期无 warning 级以上记录"; fi
+  done
+}
+
+mysql_ha_status_config_audit() {
+  status_section "配置与连通性自检"
+  local f files m ip owner
+  if [[ "${MYSQL_HA_DETECTED_ROLE}" == "arbiter" ]]; then files="${MYSQL_HA_REPMAN_CONF}"
+  else files="${MYSQL_HA_MYCNF} ${MYSQL_HA_MYSQLCHK_CNF} ${MYSQL_HA_HAPROXY_CFG}"; fi
+  for f in $files; do
+    if [[ -e "$f" ]]; then status_ok "配置 $(basename "$f")" "存在"; else status_warn "配置 $(basename "$f")" "缺失"; fi
+  done
+  # 权限 + 属主:config.toml 应 600 root；mysqlchk.cnf 应 600 mysql
+  if [[ -e "${MYSQL_HA_REPMAN_CONF}" ]]; then
+    m="$(stat -c '%a' "${MYSQL_HA_REPMAN_CONF}" 2>/dev/null || stat -f '%Lp' "${MYSQL_HA_REPMAN_CONF}" 2>/dev/null || true)"
+    [[ "$m" == "600" ]] || status_warn "权限 config.toml" "期望 600 实际 ${m}"
+  fi
+  if [[ -e "${MYSQL_HA_MYSQLCHK_CNF}" ]]; then
+    m="$(stat -c '%a' "${MYSQL_HA_MYSQLCHK_CNF}" 2>/dev/null || stat -f '%Lp' "${MYSQL_HA_MYSQLCHK_CNF}" 2>/dev/null || true)"
+    [[ "$m" == "600" ]] || status_warn "权限 mysqlchk.cnf" "期望 600 实际 ${m}"
+  fi
+  for ip in "${MYSQL_HA_NODE1_IP}" "${MYSQL_HA_NODE2_IP}"; do
+    [[ -n "$ip" ]] || continue
+    if mysql_ha_check_connectivity "$ip" "${MYSQL_HA_MYSQL_PORT}"; then status_ok "连通 ${ip}:${MYSQL_HA_MYSQL_PORT}" "可达"
+    else status_warn "连通 ${ip}:${MYSQL_HA_MYSQL_PORT}" "不可达(检查放行)"; fi
+  done
+}
+
+mysql_ha_status_load() {
+  case "${MYSQL_HA_DETECTED_ROLE}" in primary|replica) ;; *) return 0 ;; esac
+  status_section "连接数 / 负载"
+  local conns maxc pct
+  conns="$(mysql_ha_status_local_sql "SHOW STATUS LIKE 'Threads_connected'" | awk '{print $2}')"
+  maxc="$(mysql_ha_status_local_sql "SHOW VARIABLES LIKE 'max_connections'" | awk '{print $2}')"
+  if [[ "$conns" =~ ^[0-9]+$ ]] && [[ "$maxc" =~ ^[0-9]+$ ]] && [[ "$maxc" -gt 0 ]]; then
+    pct=$(( conns * 100 / maxc ))
+    if [[ "$pct" -ge "${STATUS_CONN_CRIT_PCT}" ]]; then status_crit "连接数" "${conns}/${maxc} (${pct}%)"
+    elif [[ "$pct" -ge "${STATUS_CONN_WARN_PCT}" ]]; then status_warn "连接数" "${conns}/${maxc} (${pct}%)"
+    else status_ok "连接数" "${conns}/${maxc} (${pct}%)"; fi
+  else
+    status_info "连接数" "无法获取(本机 MySQL 不可连?)"
+  fi
+  status_info "长查询" "需 PROCESS 权限(mysqlchk 账号不具备)，本期不统计；如需用 root 凭据扩展"
+}
+
+# 每个检查 || true 隔离:单项失败(含 set -e 下 `cond && action` 末尾短路返回非 0)不中断整体巡检。
+mysql_ha_status_main() {
+  status_reset
+  mysql_ha_status_load_topology || true
+  mysql_ha_status_detect_role >/dev/null || true
+  mysql_ha_status_identity || true
+  mysql_ha_status_services || true
+  mysql_ha_status_topology || true
+  mysql_ha_status_replication || true
+  mysql_ha_status_degradation || true
+  mysql_ha_status_ingress || true
+  mysql_ha_status_splitbrain || true
+  mysql_ha_status_disk || true
+  mysql_ha_status_clock || true
+  mysql_ha_status_logs || true
+  mysql_ha_status_config_audit || true
+  mysql_ha_status_load || true
+  status_summary || true
+  status_final_code
+}
