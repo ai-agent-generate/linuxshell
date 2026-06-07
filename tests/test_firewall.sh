@@ -89,12 +89,56 @@ run_config_tests() {
   )
 }
 
+run_validate_tests() {
+  load_firewall
+  fw_validate_proto tcp || fail "tcp should pass"
+  fw_validate_proto udp || fail "udp should pass"
+  if fw_validate_proto icmp 2>/dev/null; then fail "icmp should fail"; fi
+
+  fw_validate_port 22 || fail "22 should pass"
+  fw_validate_port 80,443 || fail "80,443 should pass"
+  fw_validate_port 30000:32767 || fail "range should pass"
+  if fw_validate_port 0 2>/dev/null; then fail "0 should fail"; fi
+  if fw_validate_port 70000 2>/dev/null; then fail "70000 should fail"; fi
+  if fw_validate_port 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 2>/dev/null; then fail ">15 should fail"; fi
+
+  fw_validate_source any || fail "any should pass"
+  fw_validate_source 10.0.0.1 || fail "ipv4 should pass"
+  fw_validate_source 10.0.0.0/24 || fail "ipv4 cidr should pass"
+  fw_validate_source "2001:db8::1" || fail "ipv6 should pass"
+  if fw_validate_source "garbage" 2>/dev/null; then fail "garbage should fail"; fi
+
+  assert_equals "4" "$(fw_addr_family 10.0.0.1)"
+  assert_equals "6" "$(fw_addr_family 2001:db8::1)"
+  assert_equals "any" "$(fw_addr_family any)"
+}
+
+run_rulesfile_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  export FW_RULES_DIR="${temp_root}/etc"
+  export FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+
+  fw_rules_add "host allow tcp 22 any SSH"
+  fw_rules_add "host allow tcp 80,443 any Caddy 反代"
+  assert_file_exists "$FW_RULES_FILE"
+  assert_mode "$FW_RULES_FILE" "600"
+  assert_equals "2" "$(fw_rules_read | wc -l | tr -d ' ')"
+  fw_rules_read | grep -Fq "Caddy 反代" || fail "comment with space lost"
+
+  fw_rules_delete 1
+  assert_equals "1" "$(fw_rules_read | wc -l | tr -d ' ')"
+  fw_rules_read | grep -Fq "80,443" || fail "wrong line deleted"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
-    all) run_skeleton_tests; run_config_tests ;;
+    validate) run_validate_tests ;;
+    rulesfile) run_rulesfile_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
