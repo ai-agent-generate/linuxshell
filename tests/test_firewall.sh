@@ -396,6 +396,7 @@ run_trust_input_tests() {
   : >"$log"
   ( unset SSH_CONNECTION; fw_build_input6 ip6tables FW-INPUT6 )
   assert_contains "$log" "-s 2001:db8::1 -j ACCEPT"
+  assert_order "$log" "fw-managed:ssh-guard" "fw-managed:trust"
   assert_not_contains "$log" "203.0.113.10"
 }
 
