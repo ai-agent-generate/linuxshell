@@ -233,6 +233,65 @@ run_mysql_sql_tests() {
   assert_str_contains "$sql" "max_user_connections"
 }
 
+run_pg_safety_tests() {
+  load_db_tenant
+  assert_function_exists pg_detect_target
+  assert_function_exists pg_exec_sql
+  assert_function_exists pg_query
+  assert_function_exists pg_assert_writable
+  assert_function_exists pg_guard_not_system_role
+  assert_function_exists pg_backup_tenant
+  assert_function_exists pg_drop_tenant
+
+  local tmp; tmp="$(mktemp -d)"; trap "rm -rf '$tmp'" RETURN
+  local log="${tmp}/exec.log"
+
+  # 备份失败 -> 绝不执行任何 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_guard_not_system_role() { return 0; }
+    pg_query() { echo "1"; }
+    pg_supports_force() { return 1; }
+    pg_backup_tenant() { return 1; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    if pg_drop_tenant acme acme 2>/dev/null; then fail "drop must abort when backup fails"; fi
+    assert_not_contains "$log" "DROP" )
+
+  # 备份成功但二次确认不匹配 -> 不 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk2"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_guard_not_system_role() { return 0; }
+    pg_query() { echo "1"; }
+    pg_supports_force() { return 1; }
+    pg_backup_tenant() { return 0; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "WRONG"; }
+    if pg_drop_tenant acme acme 2>/dev/null; then fail "drop must abort on name mismatch"; fi
+    assert_not_contains "$log" "DROP" )
+
+  # 备份成功且确认匹配 -> 执行 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk3"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_guard_not_system_role() { return 0; }
+    pg_query() { echo "1"; }
+    pg_supports_force() { return 1; }
+    pg_backup_tenant() { return 0; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    pg_drop_tenant acme acme || fail "drop should succeed"
+    assert_contains "$log" "DROP ROLE IF EXISTS \"acme\";" )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -242,7 +301,8 @@ main() {
     backup_helper) run_backup_helper_tests ;;
     pg_sql) run_pg_sql_tests ;;
     mysql_sql) run_mysql_sql_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests ;;
+    pg_safety) run_pg_safety_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

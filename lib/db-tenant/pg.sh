@@ -71,3 +71,100 @@ WHERE d.datname NOT IN ('postgres','template0','template1')
 ORDER BY d.datname;
 SQL
 }
+
+# 探测目标,设置 PG_TARGET_MODE=docker|local
+pg_detect_target() {
+  if [[ "${DB_TENANT_FORCE_TARGET}" == "docker" ]]; then PG_TARGET_MODE=docker; return 0; fi
+  if [[ "${DB_TENANT_FORCE_TARGET}" == "local" ]]; then PG_TARGET_MODE=local; return 0; fi
+  if command_exists docker && \
+     [[ "$(docker inspect -f '{{.State.Running}}' "${DB_TENANT_PG_CONTAINER}" 2>/dev/null)" == "true" ]]; then
+    PG_TARGET_MODE=docker
+  else
+    PG_TARGET_MODE=local
+  fi
+}
+
+# 执行 SQL(从 stdin)。$1=dbname(默认 postgres)
+pg_exec_sql() {
+  local dbname="${1:-postgres}"
+  if [[ "${PG_TARGET_MODE:-local}" == "docker" ]]; then
+    docker exec -i "${DB_TENANT_PG_CONTAINER}" psql -v ON_ERROR_STOP=1 -U postgres -d "$dbname"
+  else
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$dbname"
+  fi
+}
+
+# 标量查询。$1=dbname $2=sql -> 去空白的单值
+pg_query() {
+  local dbname="${1:-postgres}" sql="$2" out
+  if [[ "${PG_TARGET_MODE:-local}" == "docker" ]]; then
+    out="$(printf '%s\n' "$sql" | docker exec -i "${DB_TENANT_PG_CONTAINER}" psql -tAX -U postgres -d "$dbname" 2>/dev/null)"
+  else
+    out="$(printf '%s\n' "$sql" | sudo -u postgres psql -tAX -d "$dbname" 2>/dev/null)"
+  fi
+  printf '%s' "$out" | tr -d '[:space:]'
+}
+
+# 只读检测
+pg_assert_writable() {
+  if [[ "$(pg_query postgres 'SELECT pg_is_in_recovery();')" == "t" ]]; then
+    echo "当前为 standby,请在 leader 上运行写操作。" >&2; return 1
+  fi
+  return 0
+}
+
+# 是否支持 DROP DATABASE WITH (FORCE)(PG13+)
+pg_supports_force() {
+  local v; v="$(pg_query postgres 'SHOW server_version_num;')"
+  [[ -n "$v" ]] && (( v >= 130000 ))
+}
+
+# 守卫:拒绝系统/超级/复制角色
+pg_guard_not_system_role() {
+  local role="$1"
+  if db_tenant_is_system_name "$role" "${DB_TENANT_PG_SYSTEM_NAMES}"; then
+    echo "拒绝删除系统角色: $role" >&2; return 1
+  fi
+  if [[ "$(pg_query postgres "SELECT 1 FROM pg_roles WHERE rolname = '${role}' AND (rolsuper OR rolreplication OR rolbypassrls);")" == "1" ]]; then
+    echo "拒绝删除超级/复制角色: $role" >&2; return 1
+  fi
+  return 0
+}
+
+# 角色/库是否存在(返回 0/1 字符串)
+pg_role_exists() { [[ "$(pg_query postgres "SELECT 1 FROM pg_roles WHERE rolname='${1}';")" == "1" ]] && echo 1 || echo 0; }
+pg_db_exists()   { [[ "$(pg_query postgres "SELECT 1 FROM pg_database WHERE datname='${1}';")" == "1" ]] && echo 1 || echo 0; }
+
+# 备份(仅库)。$1=db;成功设置 PG_BACKUP_FILE 并返回 0
+pg_backup_tenant() {
+  local db="$1" file
+  db_tenant_prepare_backup_dir || return 1
+  file="$(db_tenant_backup_path pg "$db" dump)"
+  if [[ "${PG_TARGET_MODE:-local}" == "docker" ]]; then
+    docker exec -i "${DB_TENANT_PG_CONTAINER}" pg_dump -U postgres -Fc -d "$db" >"$file" || { rm -f "$file"; return 1; }
+  else
+    sudo -u postgres pg_dump -Fc -d "$db" >"$file" || { rm -f "$file"; return 1; }
+  fi
+  if ! db_tenant_verify_backup pg "$file"; then rm -f "$file"; return 1; fi
+  chmod 600 "$file"
+  PG_BACKUP_FILE="$file"
+  echo "已备份: $file ($(du -h "$file" 2>/dev/null | awk '{print $1}'))"
+  return 0
+}
+
+# 删除编排:校验->只读->守卫->备份+校验->二次确认->执行
+pg_drop_tenant() {
+  local role="$1" db="$2"
+  db_tenant_validate_identifier "$role" || return 1
+  db_tenant_validate_identifier "$db" || return 1
+  if db_tenant_is_system_name "$db" "${DB_TENANT_PG_SYSTEM_NAMES}"; then echo "拒绝删除系统库: $db" >&2; return 1; fi
+  pg_assert_writable || return 1
+  pg_guard_not_system_role "$role" || return 1
+  if ! pg_backup_tenant "$db"; then echo "备份失败,已中止删除。" >&2; return 1; fi
+  echo "将删除: 数据库 \"$db\" + 角色 \"$role\""
+  local typed; typed="$(prompt_with_default "确认删除请重新输入租户名" "")"
+  if [[ "$typed" != "$role" ]]; then echo "名称不匹配,已取消。" >&2; return 1; fi
+  local force; if pg_supports_force; then force=1; else force=0; fi
+  pg_build_drop_sql "$role" "$db" "$force" "$(pg_role_exists "$role")" "$(pg_db_exists "$db")" | pg_exec_sql postgres
+  echo "已删除租户: $role / $db (备份: ${PG_BACKUP_FILE:-N/A})"
+}
