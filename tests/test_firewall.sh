@@ -218,6 +218,35 @@ run_ipv6_tests() {
   assert_not_contains "$log" "2001:db8::/32"
 }
 
+run_service_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  export FW_BIN="${temp_root}/bin/fw"
+  export FW_LIB_DIR="${temp_root}/lib/linuxshell-fw"
+  export FW_SERVICE_FILE="${temp_root}/linuxshell-fw.service"
+  mkdir -p "$(dirname "$FW_BIN")"
+  load_firewall
+
+  fw_write_service
+  assert_file_exists "$FW_SERVICE_FILE"
+  assert_contains "$FW_SERVICE_FILE" "After=network-online.target docker.service k3s.service k3s-agent.service"
+  assert_contains "$FW_SERVICE_FILE" "ExecStart=${FW_BIN} apply --quiet"
+  assert_contains "$FW_SERVICE_FILE" "Type=oneshot"
+  assert_mode "$FW_SERVICE_FILE" "644"
+
+  fw_write_command
+  assert_file_exists "$FW_BIN"
+  assert_mode "$FW_BIN" "755"
+  assert_contains "$FW_BIN" "linuxshell-common.sh"
+  assert_contains "$FW_BIN" 'fw_cli "$@"'
+  bash -n "$FW_BIN" || fail "generated fw has syntax errors"
+
+  export LINUXSHELL_MODULE_ROOT="$ROOT_DIR"
+  fw_install_modules
+  assert_file_exists "${FW_LIB_DIR}/common.sh"
+  assert_file_exists "${FW_LIB_DIR}/linuxshell-common.sh"
+  assert_mode "${FW_LIB_DIR}/common.sh" "644"
+}
+
 run_docker_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   local log="${temp_root}/ipt.log"
@@ -263,7 +292,8 @@ main() {
     docker) run_docker_tests ;;
     k3s) run_k3s_tests ;;
     ipv6) run_ipv6_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests ;;
+    service) run_service_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
