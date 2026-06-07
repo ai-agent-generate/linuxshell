@@ -635,6 +635,40 @@ run_pg_status_tests() {
     assert_equals "1" "${STATUS_CRIT_COUNT}" )
 
   assert_function_exists pg_ha_status_ingress
+
+  # 磁盘:使用率超 CRIT 线 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=quorum
+    export PG_HA_ETCD_DATA="${tdir}"   # 存在的目录
+    df() { printf 'Filesystem 1K-blocks Used Avail Use%% Mounted\n/dev/x 100 95 5 95%% /\n'; }
+    status_reset; pg_ha_status_disk
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 连接数:超 WARN 线 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    pg_ha_status_local_psql() { case "$1" in *count*) echo 85 ;; *max_connections*) echo 100 ;; esac; }
+    status_reset; pg_ha_status_load
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+
+  # 编排:注入 CRIT -> 退出码 2
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    pg_ha_status_load_topology() { :; }
+    pg_ha_status_detect_role() { PG_HA_DETECTED_ROLE=primary; }
+    pg_ha_status_identity() { :; }; pg_ha_status_services() { :; }; pg_ha_status_topology() { :; }
+    pg_ha_status_replication() { :; }; pg_ha_status_degradation() { :; }; pg_ha_status_ingress() { :; }
+    pg_ha_status_splitbrain() { status_crit "injected"; }
+    pg_ha_status_disk() { :; }; pg_ha_status_clock() { :; }; pg_ha_status_logs() { :; }
+    pg_ha_status_config_audit() { :; }; pg_ha_status_load() { :; }
+    local rc=0; pg_ha_status_main >/dev/null || rc=$?
+    assert_equals "2" "$rc" )
+
+  assert_function_exists pg_ha_status_clock
+  assert_function_exists pg_ha_status_logs
+  assert_function_exists pg_ha_status_config_audit
 }
 
 run_docs_tests() {

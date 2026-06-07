@@ -242,3 +242,106 @@ pg_ha_status_splitbrain() {
   status_info "说明" "单机视角在网络分区下看不到对侧；多主检测为尽力而为，以 etcd Leader 为准"
   return 0
 }
+
+pg_ha_status_disk() {
+  status_section "磁盘与数据目录"
+  local dirs="${PG_HA_ETCD_DATA}" d pct
+  [[ "${PG_HA_DETECTED_ROLE}" != "quorum" ]] && dirs="${PG_HA_PGDATA} ${PG_HA_ETCD_DATA}"
+  for d in $dirs; do
+    [[ -e "$d" ]] || { status_info "磁盘 $d" "目录不存在，跳过"; continue; }
+    pct="$(df -P "$d" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')"
+    [[ "$pct" =~ ^[0-9]+$ ]] || { status_warn "磁盘 $d" "无法获取使用率"; continue; }
+    if [[ "$pct" -ge "${STATUS_DISK_CRIT_PCT}" ]]; then status_crit "磁盘 $d" "${pct}% (>=${STATUS_DISK_CRIT_PCT}%)"
+    elif [[ "$pct" -ge "${STATUS_DISK_WARN_PCT}" ]]; then status_warn "磁盘 $d" "${pct}% (>=${STATUS_DISK_WARN_PCT}%)"
+    else status_ok "磁盘 $d" "${pct}%"; fi
+  done
+  if [[ "${PG_HA_DETECTED_ROLE}" == "primary" ]]; then
+    local n; n="$(pg_ha_status_local_psql "SELECT count(*) FROM pg_replication_slots WHERE active=false")"
+    [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -gt 0 ]] && status_warn "WAL 堆积风险" "存在 ${n} 个 inactive 复制槽，WAL 将持续堆积"
+  fi
+}
+
+pg_ha_status_clock() {
+  status_section "时钟同步"
+  if command_exists timedatectl; then
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q '^yes$'; then
+      status_ok "NTP" "已同步"
+    else
+      status_warn "NTP" "未同步(etcd/Patroni 租约时间敏感)"
+    fi
+  else
+    status_info "NTP" "timedatectl 不可用，跳过"
+  fi
+}
+
+pg_ha_status_logs() {
+  status_section "关键日志摘要(最近 ${STATUS_LOG_LINES} 行 warning+)"
+  command_exists journalctl || { status_info "日志" "journalctl 不可用，跳过"; return 0; }
+  local svcs="etcd" svc lines
+  [[ "${PG_HA_DETECTED_ROLE}" != "quorum" ]] && svcs="etcd patroni haproxy"
+  for svc in $svcs; do
+    lines="$(journalctl -u "$svc" -n "${STATUS_LOG_LINES}" -p warning --no-pager 2>/dev/null | status_redact || true)"
+    if [[ -n "$lines" ]]; then
+      printf '  --- %s ---\n' "$svc"; printf '%s\n' "$lines" | sed 's/^/    /'
+    else
+      status_ok "$svc 日志" "近期无 warning 级以上记录"
+    fi
+  done
+}
+
+pg_ha_status_config_audit() {
+  status_section "配置与连通性自检"
+  local f files="${PG_HA_ETCD_CONFIG_FILE}" m ip
+  [[ "${PG_HA_DETECTED_ROLE}" != "quorum" ]] && files="${PG_HA_PATRONI_YAML} ${PG_HA_HAPROXY_CFG} ${PG_HA_ETCD_CONFIG_FILE}"
+  for f in $files; do
+    if [[ -e "$f" ]]; then status_ok "配置 $(basename "$f")" "存在"; else status_warn "配置 $(basename "$f")" "缺失"; fi
+  done
+  for f in "${PG_HA_PATRONI_YAML}" "${PG_HA_HAPROXY_CFG}"; do
+    [[ -e "$f" ]] || continue
+    m="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || true)"
+    [[ "$m" == "600" ]] || status_warn "权限 $(basename "$f")" "期望 600 实际 ${m}"
+  done
+  for ip in "${PG_HA_NODE1_IP}" "${PG_HA_NODE2_IP}" "${PG_HA_NODE3_IP}"; do
+    [[ -n "$ip" ]] || continue
+    if pg_ha_check_connectivity "$ip" "${PG_HA_ETCD_CLIENT_PORT}"; then status_ok "连通 ${ip}:${PG_HA_ETCD_CLIENT_PORT}" "可达"
+    else status_warn "连通 ${ip}:${PG_HA_ETCD_CLIENT_PORT}" "不可达(检查放行)"; fi
+  done
+}
+
+pg_ha_status_load() {
+  case "${PG_HA_DETECTED_ROLE}" in primary|replica) ;; *) return 0 ;; esac
+  status_section "连接数 / 负载"
+  local conns maxc pct
+  conns="$(pg_ha_status_local_psql "SELECT count(*) FROM pg_stat_activity")"
+  maxc="$(pg_ha_status_local_psql "SHOW max_connections")"
+  if [[ "$conns" =~ ^[0-9]+$ ]] && [[ "$maxc" =~ ^[0-9]+$ ]] && [[ "$maxc" -gt 0 ]]; then
+    pct=$(( conns * 100 / maxc ))
+    if [[ "$pct" -ge "${STATUS_CONN_CRIT_PCT}" ]]; then status_crit "连接数" "${conns}/${maxc} (${pct}%)"
+    elif [[ "$pct" -ge "${STATUS_CONN_WARN_PCT}" ]]; then status_warn "连接数" "${conns}/${maxc} (${pct}%)"
+    else status_ok "连接数" "${conns}/${maxc} (${pct}%)"; fi
+  else
+    status_info "连接数" "无法获取(本机 PG 不可连?)"
+  fi
+}
+
+# 编排:依次执行各检查，最后汇总并以整体级别为退出码。
+# 每个检查 || true 隔离:单项失败(含 set -e 下 `cond && action` 末尾短路返回非 0)不中断整体巡检。
+pg_ha_status_main() {
+  status_reset
+  pg_ha_status_load_topology || true
+  pg_ha_status_detect_role >/dev/null || true
+  pg_ha_status_identity || true
+  pg_ha_status_services || true
+  pg_ha_status_topology || true
+  pg_ha_status_replication || true
+  pg_ha_status_degradation || true
+  pg_ha_status_ingress || true
+  pg_ha_status_splitbrain || true
+  pg_ha_status_disk || true
+  pg_ha_status_clock || true
+  pg_ha_status_logs || true
+  pg_ha_status_config_audit || true
+  pg_ha_status_load || true
+  status_summary || true
+  status_final_code
+}
