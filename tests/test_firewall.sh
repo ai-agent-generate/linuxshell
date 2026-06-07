@@ -429,6 +429,16 @@ run_trust_docker_tests() {
   assert_not_contains "$log" "203.0.113.10"
 }
 
+run_trust_status_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+  iptables() { case "$1" in -nL) echo "Chain INPUT (policy DROP)" ;; -C) return 0 ;; esac; return 0; }
+  fw_rules_add "trust - - - 203.0.113.10 office"
+  fw_rules_add "trust - - - 198.51.100.7 vpn"
+  grep -Fq "信任IP: 2" <<<"$(fw_status 2>&1)" || fail "expected trust ip count in status"
+}
+
 run_trust_validate_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
@@ -464,6 +474,7 @@ main() {
     trust_validate) run_trust_validate_tests ;;
     trust_input) run_trust_input_tests ;;
     trust_docker) run_trust_docker_tests ;;
+    trust_status) run_trust_status_tests ;;
     apply) run_apply_tests ;;
     docker) run_docker_tests ;;
     k3s) run_k3s_tests ;;
@@ -473,7 +484,7 @@ main() {
     orchestration) run_orchestration_tests ;;
     failopen) run_failopen_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_trust_validate_tests; run_trust_input_tests; run_trust_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_trust_validate_tests; run_trust_input_tests; run_trust_docker_tests; run_trust_status_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
