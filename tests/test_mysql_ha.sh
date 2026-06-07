@@ -184,6 +184,7 @@ run_status_readonly_tests() {
     _no "$f" 'curl[^|]*(-X +(POST|PUT|DELETE|PATCH)|--request)' "HTTP write"
     _no "$f" 'curl[^|]*(-u |--user )' "plaintext curl credential"
     _no "$f" 'mysql[^|]*[[:space:]]-p[^[:space:]]' "plaintext mysql password"
+    _no "$f" '>[[:space:]]*/(etc|data|var|usr|run)/' "write to system path"
   done
   assert_contains "${ROOT_DIR}/lib/status-common.sh" "curl -K"
 }

@@ -626,6 +626,7 @@ run_pg_status_tests() {
     assert_equals "1" "${STATUS_WARN_COUNT}" )
 
   # 防脑裂:两节点 /primary 都 200 -> 多主 CRIT
+  # NODE3_IP 未设，etotal=2 不触发 etcd quorum 检查（<3），原断言不受影响
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
     PG_HA_DETECTED_ROLE=primary
@@ -633,6 +634,23 @@ run_pg_status_tests() {
     curl() { case "$*" in *"/health"*) echo '{"health":"true"}' ;; *"/primary"*) echo 200 ;; esac; }
     status_reset; pg_ha_status_splitbrain
     assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # etcd 容错:3 节点中 2 个 /health 健康，1 个不可达 -> etcd quorum WARN（ehealthy=2=equorum）
+  # /primary 全部 503 避免多主干扰；本机 /health 通过
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    # 本机 /health(127.0.0.1) + 10.0.0.1 + 10.0.0.2 -> true；10.0.0.3 -> 空(失败)
+    curl() {
+      case "$*" in
+        *"10.0.0.3"*"/health"*) return 1 ;;
+        *"/health"*)  echo '{"health":"true"}' ;;
+        *"/primary"*) echo 503 ;;
+      esac
+    }
+    status_reset; pg_ha_status_splitbrain
+    [[ "${STATUS_WARN_COUNT}" -ge 1 ]] || fail "expected etcd quorum WARN when only 2/3 members healthy" )
 
   assert_function_exists pg_ha_status_ingress
 

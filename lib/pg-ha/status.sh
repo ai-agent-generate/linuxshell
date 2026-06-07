@@ -225,6 +225,26 @@ pg_ha_status_splitbrain() {
   else
     status_crit "etcd 本机" "/health 非 true 或不可达(影响自动故障转移)"
   fi
+  # etcd 集群成员健康汇总（免认证 /health，不需 RBAC 凭据；quorum 节点同样适用）
+  local ehealthy=0 etotal=0 eip equorum
+  for eip in "${PG_HA_NODE1_IP}" "${PG_HA_NODE2_IP}" "${PG_HA_NODE3_IP}"; do
+    [[ -n "$eip" ]] || continue
+    etotal=$((etotal+1))
+    if curl -fsS --max-time 4 "http://${eip}:${PG_HA_ETCD_CLIENT_PORT}/health" 2>/dev/null \
+         | grep -q '"health"[[:space:]]*:[[:space:]]*"true"'; then
+      ehealthy=$((ehealthy+1))
+    fi
+  done
+  if [[ "$etotal" -ge 3 ]]; then
+    equorum=$(( etotal / 2 + 1 ))
+    if [[ "$ehealthy" -lt "$equorum" ]]; then
+      status_crit "etcd quorum" "仅 ${ehealthy}/${etotal} 成员健康，已失去多数派(quorum=${equorum})，DCS 不可写、自动故障转移失效"
+    elif [[ "$ehealthy" -eq "$equorum" ]]; then
+      status_warn "etcd quorum" "${ehealthy}/${etotal} 成员健康，容错已耗尽，再失一个成员将失去 quorum"
+    else
+      status_ok "etcd quorum" "${ehealthy}/${etotal} 成员健康"
+    fi
+  fi
   [[ "${PG_HA_DETECTED_ROLE}" == "quorum" ]] && { status_info "多主检测" "quorum 节点不参与 PG 主判定"; return 0; }
   local ip primaries=0 code
   for ip in "${PG_HA_NODE1_IP}" "${PG_HA_NODE2_IP}"; do
