@@ -188,6 +188,36 @@ run_k3s_tests() {
     [[ -z "$(fw_check_rp_filter 2>&1)" ]] || fail "expected no warning when rp_filter=1" )
 }
 
+run_ipv6_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  export FW_SSH_PORT=22
+  load_firewall
+  ip6tables() { echo "ip6tables $*" >>"$log"; return 0; }
+  iptables() { echo "iptables $*" >>"$log"; return 0; }
+  command_exists() { case "$1" in sshd) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  fw_rules_add "host allow tcp 22 any SSH"
+  fw_rules_add "host allow tcp 9090 10.0.0.0/24 v4only"
+  fw_rules_add "host allow tcp 8443 2001:db8::/32 v6only"
+
+  # IPv6 入站链:ICMPv6 排除 137,v4 源被过滤
+  : >"$log"
+  ( unset SSH_CONNECTION; fw_build_input6 ip6tables FW-INPUT6 )
+  assert_contains "$log" "--icmpv6-type 133"
+  assert_contains "$log" "--icmpv6-type 136"
+  assert_not_contains "$log" "--icmpv6-type 137"
+  assert_contains "$log" "--dports 22"
+  assert_contains "$log" "-s 2001:db8::/32"
+  assert_not_contains "$log" "10.0.0.0/24"
+
+  # IPv4 入站链:v6 源被过滤
+  : >"$log"
+  ( unset SSH_CONNECTION; fw_build_host_rules iptables FW-INPUT )
+  assert_contains "$log" "-s 10.0.0.0/24"
+  assert_not_contains "$log" "2001:db8::/32"
+}
+
 run_docker_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   local log="${temp_root}/ipt.log"
@@ -232,7 +262,8 @@ main() {
     apply) run_apply_tests ;;
     docker) run_docker_tests ;;
     k3s) run_k3s_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests ;;
+    ipv6) run_ipv6_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
