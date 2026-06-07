@@ -8,6 +8,10 @@ write_mysqlchk_script() {
 DEFAULTS_FILE="${MYSQL_HA_MYSQLCHK_CNF}"
 EOF
   cat >>"${MYSQL_HA_MYSQLCHK_SCRIPT}" <<'EOF'
+while IFS= read -r -t 0.2 line; do
+  [[ "$line" == $'\r' || -z "$line" ]] && break
+done
+
 RO="$(mysql --defaults-extra-file="$DEFAULTS_FILE" -N -B -e 'SELECT @@global.read_only' 2>/dev/null)"
 if [[ "$RO" == "0" ]]; then
   BODY="MySQL writable primary"

@@ -4,20 +4,21 @@
 mysql_ha_show_summary() {
   print_step "MySQL HA deployment summary"
   echo "Role: ${MYSQL_HA_ROLE} (${MYSQL_HA_NODE_NAME} @ ${MYSQL_HA_NODE_IP})"
-  echo "Cluster: ${MYSQL_HA_CLUSTER_NAME} | orchestrator raft: ${MYSQL_HA_NODE1_IP},${MYSQL_HA_NODE2_IP},${MYSQL_HA_NODE3_IP}"
-  echo "Orchestrator Web/API: http://${MYSQL_HA_NODE_IP}:${MYSQL_HA_ORCH_PORT} (basic auth, user 'admin')"
+  echo "Cluster: ${MYSQL_HA_CLUSTER_NAME} | data nodes: ${MYSQL_HA_NODE1_IP},${MYSQL_HA_NODE2_IP} | arbiter: ${MYSQL_HA_NODE3_IP}"
   if [[ "${MYSQL_HA_ROLE}" != "arbiter" ]]; then
     echo "App connects to HAProxy :${MYSQL_HA_PROXY_PORT} (read+write, always current primary)"
     echo "Configure your app with BOTH HAProxy addresses (${MYSQL_HA_NODE1_IP}:${MYSQL_HA_PROXY_PORT}, ${MYSQL_HA_NODE2_IP}:${MYSQL_HA_PROXY_PORT}) and connection-retry."
-    echo "Writability is maintained by mysql-ha-watcher; a node loses raft majority -> self-fences (super_read_only=ON)."
+    echo "Writability is maintained by Replication Manager on the arbiter and HAProxy mysqlchk health checks."
     if [[ "$(to_lower "${MYSQL_HA_SEMISYNC}")" == "on" ]]; then
       echo "Semi-sync: ON (near-zero RPO)."
     else
       echo "Semi-sync: OFF (async, RPO>0). Set MYSQL_HA_SEMISYNC=on for payment/strong-consistency workloads."
     fi
-    echo "After a failover, a returning old primary likely needs full rebuild (errant GTID); re-add via orchestrator/reinstall before serving traffic."
+    echo "After a failover, a returning old primary must be checked/rejoined by Replication Manager before serving traffic."
+  else
+    echo "Replication Manager API: $(mysql_ha_repman_api_url)"
   fi
-  echo "Passwords must be identical across data nodes (orchestrator passwords across all nodes). Store them securely."
+  echo "Passwords must be identical across nodes where documented. Store them securely."
 }
 
 mysql_ha_main() {
@@ -25,6 +26,7 @@ mysql_ha_main() {
   detect_os
   mysql_ha_collect_config
   mysql_ha_validate_node_ips
+  mysql_ha_validate_mysql_version
   mysql_ha_check_time_sync
   mysql_ha_require_passwords
   if [[ "${MYSQL_HA_ROLE}" != "arbiter" && -z "${MYSQL_HA_APP_ALLOWED_CIDR}" ]]; then
@@ -34,10 +36,10 @@ mysql_ha_main() {
 
   case "${MYSQL_HA_ROLE}" in
     arbiter)
-      install_orchestrator
-      write_orchestrator_client_cnf
-      write_orchestrator_config "${MYSQL_HA_NODE_IP}"
-      start_orchestrator
+      install_repman
+      write_repman_config
+      write_repman_unit
+      start_repman
       ;;
     primary)
       install_mysql
@@ -45,18 +47,10 @@ mysql_ha_main() {
       write_my_cnf "1" "primary"
       start_mysql
       bootstrap_mysql_accounts
-      install_orchestrator
-      write_orchestrator_client_cnf
-      write_orchestrator_config "${MYSQL_HA_NODE_IP}"
-      start_orchestrator
-      mysql_ha_wait_raft_quorum
-      orchestrator_discover
       setup_mysqlchk
       start_mysqlchk
       install_haproxy
       start_haproxy
-      setup_watcher
-      start_watcher
       ;;
     replica)
       install_mysql
@@ -64,16 +58,10 @@ mysql_ha_main() {
       write_my_cnf "2" "replica"
       start_mysql
       setup_replication
-      install_orchestrator
-      write_orchestrator_client_cnf
-      write_orchestrator_config "${MYSQL_HA_NODE_IP}"
-      start_orchestrator
       setup_mysqlchk
       start_mysqlchk
       install_haproxy
       start_haproxy
-      setup_watcher
-      start_watcher
       ;;
   esac
 

@@ -26,15 +26,28 @@ mysql_ha_validate_node_ips() {
   done
 }
 
+mysql_ha_validate_mysql_version() {
+  case "${MYSQL_HA_VERSION}" in
+    8.4)
+      return 0
+      ;;
+    *)
+      echo "MYSQL_HA_VERSION=${MYSQL_HA_VERSION} is not supported in this HA mode. Use MYSQL_HA_VERSION=8.4." >&2
+      echo "This path is designed for MySQL 8.4 classic GTID replication managed by Replication Manager." >&2
+      return 1
+      ;;
+  esac
+}
+
 # 仅字母数字:避免 / + = 破坏 JSON(orchestrator.conf.json)/SQL/cnf 的转义
 mysql_ha_generate_password() {
   openssl rand -base64 24 | tr -d '/+=\n' | cut -c1-25
 }
 
 mysql_ha_require_passwords() {
-  local var vars="MYSQL_HA_ORCH_PASSWORD MYSQL_HA_ORCH_HTTP_PASSWORD"
+  local var vars="MYSQL_HA_REPMAN_PASSWORD MYSQL_HA_REPMAN_API_PASSWORD MYSQL_HA_REPL_PASSWORD"
   if [[ "${MYSQL_HA_ROLE}" != "arbiter" ]]; then
-    vars="$vars MYSQL_HA_ROOT_PASSWORD MYSQL_HA_REPL_PASSWORD MYSQL_HA_MYSQLCHK_PASSWORD MYSQL_HA_WATCHER_PASSWORD MYSQL_HA_APP_PASSWORD"
+    vars="$vars MYSQL_HA_ROOT_PASSWORD MYSQL_HA_MYSQLCHK_PASSWORD MYSQL_HA_APP_PASSWORD MYSQL_HA_STATS_PASSWORD"
   fi
   for var in $vars; do
     if [[ -z "${!var}" ]]; then
@@ -56,14 +69,14 @@ mysql_ha_check_connectivity() {
 # 非阻塞:仅探测节点间关键端口并提示(部署顺序下后部署节点未启属正常)
 mysql_ha_preflight_connectivity() {
   local node_ip unreachable=0
-  for node_ip in "${MYSQL_HA_NODE1_IP}" "${MYSQL_HA_NODE2_IP}" "${MYSQL_HA_NODE3_IP}"; do
-    if ! mysql_ha_check_connectivity "$node_ip" "${MYSQL_HA_ORCH_PORT}"; then
-      echo "Note: orchestrator ${MYSQL_HA_ORCH_PORT} on ${node_ip} not reachable yet (node may not be started)." >&2
+  for node_ip in "${MYSQL_HA_NODE1_IP}" "${MYSQL_HA_NODE2_IP}"; do
+    if ! mysql_ha_check_connectivity "$node_ip" "${MYSQL_HA_MYSQL_PORT}"; then
+      echo "Note: MySQL ${MYSQL_HA_MYSQL_PORT} on ${node_ip} not reachable yet (node may not be started)." >&2
       unreachable=1
     fi
   done
   if [[ "$unreachable" -eq 1 ]]; then
-    echo "If this persists after all nodes are deployed, open ${MYSQL_HA_ORCH_PORT}/${MYSQL_HA_ORCH_RAFT_PORT}/3306/9200 between nodes." >&2
+    echo "If this persists after all nodes are deployed, open 3306/9200/6446 between data nodes and ${MYSQL_HA_REPMAN_API_PORT} to the arbiter." >&2
   fi
   return 0
 }
@@ -71,26 +84,15 @@ mysql_ha_preflight_connectivity() {
 mysql_ha_check_time_sync() {
   if command_exists timedatectl; then
     if ! timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q '^yes$'; then
-      echo "Warning: system clock not NTP-synchronized; raft elections are time-sensitive." >&2
+      echo "Warning: system clock not NTP-synchronized; failover decisions are time-sensitive." >&2
       echo "Consider: apt-get install -y chrony" >&2
     fi
   fi
 }
 
-# 阻塞等待本机 Orchestrator raft 健康(对标 PG 版 etcd quorum 握手)
-# 注:/api/raft-health 返回结构以实现期实测为准(spec Open Item #2)
-mysql_ha_wait_raft_quorum() {
-  local attempt out
-  for attempt in $(seq 1 30); do
-    out="$(curl -fsS --netrc-file <(printf 'machine 127.0.0.1 login admin password %s\n' "${MYSQL_HA_ORCH_HTTP_PASSWORD}") \
-            "http://127.0.0.1:${MYSQL_HA_ORCH_PORT}/api/raft-health" 2>/dev/null || true)"
-    if printf '%s' "$out" | grep -qi 'healthy'; then
-      return 0
-    fi
-    sleep 2
-  done
-  echo "Orchestrator raft not healthy. Ensure all three orchestrator nodes are up and ${MYSQL_HA_ORCH_PORT}/${MYSQL_HA_ORCH_RAFT_PORT} are reachable between nodes." >&2
-  return 1
+mysql_ha_repman_api_url() {
+  local host="${MYSQL_HA_NODE3_IP:-${MYSQL_HA_NODE_IP:-127.0.0.1}}"
+  printf "http://%s:%s" "$host" "${MYSQL_HA_REPMAN_API_PORT}"
 }
 
 mysql_ha_collect_config() {
@@ -116,16 +118,14 @@ GUIDE
     arbiter) MYSQL_HA_NODE_NAME="node3"; MYSQL_HA_NODE_IP="${MYSQL_HA_NODE3_IP}"; MYSQL_HA_SERVER_ID=0 ;;
   esac
 
-  # orchestrator topology + Web 认证密码(三台一致;arbiter 也需连 MySQL 监控 + 提供 Web auth)
-  MYSQL_HA_ORCH_PASSWORD="$(prompt_with_default "orchestrator topology password (identical on ALL nodes)" "${MYSQL_HA_ORCH_PASSWORD}")"
-  MYSQL_HA_ORCH_HTTP_PASSWORD="$(prompt_with_default "orchestrator web/API password (identical on ALL nodes)" "${MYSQL_HA_ORCH_HTTP_PASSWORD:-$(mysql_ha_generate_password)}")"
+  MYSQL_HA_REPMAN_PASSWORD="$(prompt_with_default "Replication Manager MySQL password (identical on ALL nodes)" "${MYSQL_HA_REPMAN_PASSWORD}")"
+  MYSQL_HA_REPMAN_API_PASSWORD="$(prompt_with_default "Replication Manager API password (arbiter)" "${MYSQL_HA_REPMAN_API_PASSWORD:-$(mysql_ha_generate_password)}")"
+  MYSQL_HA_REPL_PASSWORD="$(prompt_with_default "replication password (identical on data nodes and arbiter config)" "${MYSQL_HA_REPL_PASSWORD}")"
 
   if [[ "${MYSQL_HA_ROLE}" != "arbiter" ]]; then
     MYSQL_HA_APP_ALLOWED_CIDR="$(prompt_with_default "Application allowed CIDR (e.g. 10.0.0.0/24)" "${MYSQL_HA_APP_ALLOWED_CIDR}")"
     MYSQL_HA_ROOT_PASSWORD="$(prompt_with_default "MySQL root password (identical on data nodes)" "${MYSQL_HA_ROOT_PASSWORD}")"
-    MYSQL_HA_REPL_PASSWORD="$(prompt_with_default "replication password (identical on data nodes)" "${MYSQL_HA_REPL_PASSWORD}")"
     MYSQL_HA_MYSQLCHK_PASSWORD="$(prompt_with_default "mysqlchk password (identical on data nodes)" "${MYSQL_HA_MYSQLCHK_PASSWORD:-$(mysql_ha_generate_password)}")"
-    MYSQL_HA_WATCHER_PASSWORD="$(prompt_with_default "watcher password (identical on data nodes)" "${MYSQL_HA_WATCHER_PASSWORD:-$(mysql_ha_generate_password)}")"
     MYSQL_HA_APP_PASSWORD="$(prompt_with_default "application '${MYSQL_HA_APP_USER}' password (identical on data nodes)" "${MYSQL_HA_APP_PASSWORD}")"
     MYSQL_HA_STATS_PASSWORD="$(prompt_with_default "HAProxy stats password" "${MYSQL_HA_STATS_PASSWORD:-$(mysql_ha_generate_password)}")"
   fi

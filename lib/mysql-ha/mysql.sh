@@ -5,15 +5,13 @@ write_my_cnf() {
   local semisync_block=""
 
   if [[ "$(to_lower "${MYSQL_HA_SEMISYNC}")" == "on" ]]; then
-    if [[ "$role" == "primary" ]]; then
-      semisync_block="plugin_load_add=semisync_source.so
+    # 两台数据节点都可能在切换后成为 source 或 replica,因此同时加载两种半同步插件。
+    semisync_block="plugin_load_add=semisync_source.so
+plugin_load_add=semisync_replica.so
 rpl_semi_sync_source_enabled=1
 rpl_semi_sync_source_timeout=${MYSQL_HA_SEMISYNC_TIMEOUT}
-rpl_semi_sync_source_wait_for_replica_count=1"
-    else
-      semisync_block="plugin_load_add=semisync_replica.so
+rpl_semi_sync_source_wait_for_replica_count=1
 rpl_semi_sync_replica_enabled=1"
-    fi
   fi
 
   mkdir -p "$(dirname "${MYSQL_HA_MYCNF}")"
@@ -23,6 +21,9 @@ server_id=${server_id}
 bind-address=${MYSQL_HA_NODE_IP}
 port=${MYSQL_HA_MYSQL_PORT}
 datadir=${MYSQL_HA_DATADIR}
+report_host=${MYSQL_HA_NODE_IP}
+report_port=${MYSQL_HA_MYSQL_PORT}
+skip_name_resolve=ON
 
 gtid_mode=ON
 enforce_gtid_consistency=ON
@@ -33,7 +34,7 @@ relay_log=relay-bin
 relay_log_recovery=ON
 binlog_expire_logs_seconds=${MYSQL_HA_BINLOG_EXPIRE_SECONDS}
 
-# boot 安全默认:重启即只读,由 mysql-ha-watcher 依 Orchestrator 拓扑收敛回可写
+# boot 安全默认:重启即只读,由 Replication Manager 在故障切换时提升可写
 super_read_only=ON
 ${semisync_block}
 EOF
@@ -41,24 +42,51 @@ EOF
   chmod 644 "${MYSQL_HA_MYCNF}"
 }
 
+mysql_ha_mysql_repo_component() {
+  case "${MYSQL_HA_VERSION}" in
+    8.0) printf "mysql-8.0" ;;
+    *) printf "mysql-%s-lts" "${MYSQL_HA_VERSION}" ;;
+  esac
+}
+
+mysql_ha_installed_mysql_major_minor() {
+  mysqld --version 2>/dev/null | sed -n 's/.* Ver \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
+}
+
+mysql_ha_mysql_installed_matches_target() {
+  local installed
+  installed="$(mysql_ha_installed_mysql_major_minor)"
+  [[ "$installed" == "${MYSQL_HA_VERSION}" ]]
+}
+
 add_mysql_repo() {
-  print_step "Adding MySQL APT repository (mysql-${MYSQL_HA_VERSION}-lts)"
+  local repo_component
+  repo_component="$(mysql_ha_mysql_repo_component)"
+  print_step "Adding MySQL APT repository (${repo_component})"
   export DEBIAN_FRONTEND=noninteractive
   local codename keyring
   codename="$(lsb_release -cs 2>/dev/null || echo noble)"
   keyring="/usr/share/keyrings/mysql.gpg"
   apt-get install -y curl ca-certificates gnupg lsb-release
-  # 导入 MySQL 签名公钥到独立 keyring(指纹 B7B3B788A8D3785C)
-  curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2023 | gpg --batch --yes --dearmor -o "$keyring"
+  # 导入 MySQL 签名公钥到独立 keyring(2023 key 已过期,Oracle 仓库当前发布 2025 key)
+  curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 | gpg --batch --yes --dearmor -o "$keyring"
   cat >/etc/apt/sources.list.d/mysql.list <<EOF
-deb [signed-by=${keyring}] https://repo.mysql.com/apt/ubuntu ${codename} mysql-${MYSQL_HA_VERSION}-lts
+deb [signed-by=${keyring}] https://repo.mysql.com/apt/ubuntu ${codename} ${repo_component}
 EOF
 }
 
 install_mysql() {
   print_step "Installing MySQL ${MYSQL_HA_VERSION}"
   if command_exists mysqld; then
-    echo "mysqld already installed."
+    if mysql_ha_mysql_installed_matches_target; then
+      echo "mysqld already installed with target version ${MYSQL_HA_VERSION}."
+      return 0
+    fi
+    echo "mysqld is installed but not ${MYSQL_HA_VERSION}; upgrading via MySQL APT repository."
+    add_mysql_repo
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y mysql-server rsync
     return 0
   fi
   add_mysql_repo
@@ -89,6 +117,17 @@ apply_apparmor_datadir() {
 relocate_datadir() {
   [[ "${MYSQL_HA_DATADIR}" == "/var/lib/mysql" ]] && return 0
   print_step "Relocating MySQL datadir to ${MYSQL_HA_DATADIR}"
+  if [[ -f "${MYSQL_HA_DATADIR}/auto.cnf" || -d "${MYSQL_HA_DATADIR}/mysql" ]]; then
+    echo "MySQL datadir already exists at ${MYSQL_HA_DATADIR}; skipping relocation."
+    apply_apparmor_datadir
+    chown -R mysql:mysql "${MYSQL_HA_DATADIR}"
+    chmod 750 "${MYSQL_HA_DATADIR}"
+    return 0
+  fi
+  if [[ -d "${MYSQL_HA_DATADIR}" ]] && [[ -n "$(find "${MYSQL_HA_DATADIR}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "Refusing to copy /var/lib/mysql into non-empty ${MYSQL_HA_DATADIR}; move or empty it first." >&2
+    return 1
+  fi
   systemctl stop mysql 2>/dev/null || true
   apply_apparmor_datadir
   mkdir -p "${MYSQL_HA_DATADIR}"
@@ -127,8 +166,6 @@ bootstrap_mysql_accounts() {
 SET GLOBAL read_only = OFF;
 CREATE USER IF NOT EXISTS 'mysqlchk'@'localhost' IDENTIFIED BY '${MYSQL_HA_MYSQLCHK_PASSWORD}';
 GRANT REPLICATION CLIENT ON *.* TO 'mysqlchk'@'localhost';
-CREATE USER IF NOT EXISTS 'watcher'@'localhost' IDENTIFIED BY '${MYSQL_HA_WATCHER_PASSWORD}';
-GRANT SYSTEM_VARIABLES_ADMIN, REPLICATION CLIENT ON *.* TO 'watcher'@'localhost';
 CREATE DATABASE IF NOT EXISTS \`${MYSQL_HA_APP_DB}\`;
 CREATE USER IF NOT EXISTS '${MYSQL_HA_APP_USER}'@'${MYSQL_HA_APP_ALLOWED_CIDR}' IDENTIFIED BY '${MYSQL_HA_APP_PASSWORD}';
 GRANT ALL PRIVILEGES ON \`${MYSQL_HA_APP_DB}\`.* TO '${MYSQL_HA_APP_USER}'@'${MYSQL_HA_APP_ALLOWED_CIDR}';
@@ -140,28 +177,32 @@ CREATE USER IF NOT EXISTS 'repl'@'${ip}' IDENTIFIED BY '${MYSQL_HA_REPL_PASSWORD
 GRANT REPLICATION SLAVE ON *.* TO 'repl'@'${ip}';
 SQL
   done
-  # orchestrator:三台 IP(仲裁节点也连 MySQL 监控);8.4 动态权限替代弃用的 SUPER
+  # Replication Manager:三台 IP 均授权,便于未来从任意节点运行监控/恢复
   for ip in "${MYSQL_HA_NODE1_IP}" "${MYSQL_HA_NODE2_IP}" "${MYSQL_HA_NODE3_IP}"; do
     _mysql_root_exec <<SQL
-CREATE USER IF NOT EXISTS 'orchestrator'@'${ip}' IDENTIFIED BY '${MYSQL_HA_ORCH_PASSWORD}';
-GRANT PROCESS, REPLICATION SLAVE, REPLICATION CLIENT, RELOAD ON *.* TO 'orchestrator'@'${ip}';
-GRANT SYSTEM_VARIABLES_ADMIN, REPLICATION_SLAVE_ADMIN ON *.* TO 'orchestrator'@'${ip}';
-GRANT SELECT ON mysql.* TO 'orchestrator'@'${ip}';
+CREATE USER IF NOT EXISTS '${MYSQL_HA_REPMAN_USER}'@'${ip}' IDENTIFIED BY '${MYSQL_HA_REPMAN_PASSWORD}' PASSWORD EXPIRE NEVER;
+GRANT SELECT, PROCESS, RELOAD, SUPER, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO '${MYSQL_HA_REPMAN_USER}'@'${ip}';
+GRANT REPLICATION_SLAVE_ADMIN, BINLOG_ADMIN, SYSTEM_VARIABLES_ADMIN, CONNECTION_ADMIN ON *.* TO '${MYSQL_HA_REPMAN_USER}'@'${ip}';
+CREATE DATABASE IF NOT EXISTS replication_manager_schema;
+GRANT ALL PRIVILEGES ON replication_manager_schema.* TO '${MYSQL_HA_REPMAN_USER}'@'${ip}';
 SQL
   done
 }
 
-# 仅 replica:指向 primary(8.4 + caching_sha2 + 无 TLS → GET_SOURCE_PUBLIC_KEY=1)
+# 仅 replica:指向 primary(MySQL 8.4 caching_sha2;复制链路使用 MySQL 自动生成的 SSL)
 setup_replication() {
   print_step "Configuring replication from primary (${MYSQL_HA_NODE1_IP})"
   _mysql_root_exec <<SQL
+STOP REPLICA;
+RESET REPLICA ALL;
 CHANGE REPLICATION SOURCE TO
   SOURCE_HOST='${MYSQL_HA_NODE1_IP}',
   SOURCE_PORT=${MYSQL_HA_MYSQL_PORT},
   SOURCE_USER='repl',
   SOURCE_PASSWORD='${MYSQL_HA_REPL_PASSWORD}',
   SOURCE_AUTO_POSITION=1,
-  GET_SOURCE_PUBLIC_KEY=1;
+  SOURCE_SSL=1,
+  GET_SOURCE_PUBLIC_KEY=0;
 START REPLICA;
 SQL
 }

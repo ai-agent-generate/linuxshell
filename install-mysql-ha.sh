@@ -37,9 +37,8 @@ load_linuxshell_modules \
   lib/mysql-ha/config.sh \
   lib/mysql-ha/common.sh \
   lib/mysql-ha/mysql.sh \
-  lib/mysql-ha/orchestrator.sh \
+  lib/mysql-ha/repman.sh \
   lib/mysql-ha/mysqlchk.sh \
-  lib/mysql-ha/watcher.sh \
   lib/mysql-ha/haproxy.sh \
   lib/mysql-ha/main.sh
 

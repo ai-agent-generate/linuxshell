@@ -22,9 +22,8 @@ load_mysql_ha() {
   source "${ROOT_DIR}/lib/mysql-ha/config.sh"
   source "${ROOT_DIR}/lib/mysql-ha/common.sh"
   source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
-  source "${ROOT_DIR}/lib/mysql-ha/orchestrator.sh"
+  source "${ROOT_DIR}/lib/mysql-ha/repman.sh"
   source "${ROOT_DIR}/lib/mysql-ha/mysqlchk.sh"
-  source "${ROOT_DIR}/lib/mysql-ha/watcher.sh"
   source "${ROOT_DIR}/lib/mysql-ha/haproxy.sh"
   source "${ROOT_DIR}/lib/mysql-ha/main.sh"
 }
@@ -38,19 +37,20 @@ run_config_tests() {
     assert_equals "3306" "${MYSQL_HA_MYSQL_PORT}"
     assert_equals "6446" "${MYSQL_HA_PROXY_PORT}"
     assert_equals "9200" "${MYSQL_HA_MYSQLCHK_PORT}"
-    assert_equals "3000" "${MYSQL_HA_ORCH_PORT}"
-    assert_equals "10008" "${MYSQL_HA_ORCH_RAFT_PORT}"
-    assert_equals "off" "${MYSQL_HA_SEMISYNC}"
+    assert_equals "10005" "${MYSQL_HA_REPMAN_API_PORT}"
+    assert_equals "v3.1.28" "${MYSQL_HA_REPMAN_VERSION}"
+    assert_equals "/usr/bin/replication-manager-osc" "${MYSQL_HA_REPMAN_BIN}"
+    assert_equals "on" "${MYSQL_HA_SEMISYNC}"
     assert_equals "" "${MYSQL_HA_APP_ALLOWED_CIDR}"
     assert_equals "/data/mysql-ha/data" "${MYSQL_HA_DATADIR}"
   )
-  ( unset MYSQL_HA_DATADIR MYSQL_HA_ORCH_DATADIR
+  ( unset MYSQL_HA_DATADIR MYSQL_HA_REPMAN_DATADIR
     export DATA_ROOT="/opt/x" MYSQL_HA_PROXY_PORT="7000"
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"
     assert_equals "/opt/x" "${DATA_ROOT}"
     assert_equals "7000" "${MYSQL_HA_PROXY_PORT}"
     assert_equals "/opt/x/mysql-ha/data" "${MYSQL_HA_DATADIR}"
-    assert_equals "/opt/x/mysql-ha/orchestrator" "${MYSQL_HA_ORCH_DATADIR}"
+    assert_equals "/opt/x/mysql-ha/replication-manager" "${MYSQL_HA_REPMAN_DATADIR}"
   )
 }
 
@@ -62,6 +62,11 @@ run_skeleton_tests() {
   assert_contains "$entry" "lib/mysql-ha/main.sh"
   assert_contains "$entry" "lib/common.sh"
   assert_not_contains "$entry" "lib/config.sh"
+  assert_contains "$entry" "lib/mysql-ha/repman.sh"
+  assert_not_contains "$entry" "lib/mysql-ha/orchestrator.sh"
+  assert_not_contains "$entry" "lib/mysql-ha/watcher.sh"
+  [[ ! -e "${ROOT_DIR}/lib/mysql-ha/orchestrator.sh" ]] || fail "orchestrator module should not exist in Replication Manager mode"
+  [[ ! -e "${ROOT_DIR}/lib/mysql-ha/watcher.sh" ]] || fail "watcher module should not exist in Replication Manager mode"
 
   local module
   while IFS= read -r module; do
@@ -71,7 +76,7 @@ run_skeleton_tests() {
   load_mysql_ha
   local fn
   for fn in mysql_ha_parse_role mysql_ha_validate_node_ips write_my_cnf \
-            write_orchestrator_config write_mysqlchk_script write_watcher_script \
+            write_repman_config write_mysqlchk_script \
             write_haproxy_config mysql_ha_main; do
     assert_function_exists "$fn"
   done
@@ -103,6 +108,17 @@ run_common_tests() {
   [[ ${#pw} -ge 16 ]] || fail "expected generated password length >= 16"
   # 密码仅字母数字(避免 JSON/SQL/cnf 转义)
   [[ "$pw" =~ ^[A-Za-z0-9]+$ ]] || fail "generated password must be alphanumeric only: $pw"
+
+  ( export MYSQL_HA_NODE_IP="10.0.0.3" MYSQL_HA_REPMAN_API_PORT="10006"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"
+    assert_function_exists mysql_ha_repman_api_url
+    assert_equals "http://10.0.0.3:10006" "$(mysql_ha_repman_api_url)" )
+
+  assert_function_exists mysql_ha_validate_mysql_version
+  mysql_ha_validate_mysql_version || fail "expected default MySQL version to be supported"
+  ( export MYSQL_HA_VERSION="8.0"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"
+    if mysql_ha_validate_mysql_version 2>/dev/null; then fail "expected MySQL 8.0 to be rejected for this 8.4 HA mode"; fi )
 }
 
 run_precheck_tests() {
@@ -110,13 +126,6 @@ run_precheck_tests() {
   assert_function_exists mysql_ha_check_connectivity
   assert_function_exists mysql_ha_check_time_sync
   assert_function_exists mysql_ha_preflight_connectivity
-  assert_function_exists mysql_ha_wait_raft_quorum
-
-  # raft quorum 等待:mock curl 返回 healthy 立即成功
-  ( source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"
-    export MYSQL_HA_ORCH_HTTP_PASSWORD=x MYSQL_HA_ORCH_PORT=3000
-    curl() { echo '{"Healthy":true}'; }
-    mysql_ha_wait_raft_quorum || fail "expected raft quorum wait to succeed when healthy" )
 }
 
 run_mysql_cnf_tests() {
@@ -141,6 +150,9 @@ run_mysql_cnf_tests() {
   assert_contains "${MYSQL_HA_MYCNF}" "binlog_expire_logs_seconds=604800"
   assert_contains "${MYSQL_HA_MYCNF}" "datadir=${temp_root}/data"
   assert_contains "${MYSQL_HA_MYCNF}" "bind-address=10.0.0.1"
+  assert_contains "${MYSQL_HA_MYCNF}" "report_host=10.0.0.1"
+  assert_contains "${MYSQL_HA_MYCNF}" "report_port=3306"
+  assert_contains "${MYSQL_HA_MYCNF}" "skip_name_resolve=ON"
   assert_not_contains "${MYSQL_HA_MYCNF}" "rpl_semi_sync"
   assert_mode "${MYSQL_HA_MYCNF}" "644"
 
@@ -153,59 +165,117 @@ run_mysql_cnf_tests() {
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
     write_my_cnf "1" "primary"
     assert_contains "${temp_root}/semi-src.cnf" "plugin_load_add=semisync_source.so"
+    assert_contains "${temp_root}/semi-src.cnf" "plugin_load_add=semisync_replica.so"
     assert_contains "${temp_root}/semi-src.cnf" "rpl_semi_sync_source_enabled=1"
+    assert_contains "${temp_root}/semi-src.cnf" "rpl_semi_sync_replica_enabled=1"
     assert_contains "${temp_root}/semi-src.cnf" "rpl_semi_sync_source_wait_for_replica_count=1" )
 
   # 半同步 on + replica
   ( export MYSQL_HA_SEMISYNC="on" MYSQL_HA_MYCNF="${temp_root}/semi-rep.cnf" MYSQL_HA_NODE_IP=10.0.0.2
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
     write_my_cnf "2" "replica"
+    assert_contains "${temp_root}/semi-rep.cnf" "plugin_load_add=semisync_source.so"
     assert_contains "${temp_root}/semi-rep.cnf" "plugin_load_add=semisync_replica.so"
+    assert_contains "${temp_root}/semi-rep.cnf" "rpl_semi_sync_source_enabled=1"
     assert_contains "${temp_root}/semi-rep.cnf" "rpl_semi_sync_replica_enabled=1" )
 
   assert_function_exists add_mysql_repo
+  assert_contains "${ROOT_DIR}/lib/mysql-ha/mysql.sh" "RPM-GPG-KEY-mysql-2025"
+  assert_function_exists mysql_ha_mysql_repo_component
+  assert_equals "mysql-8.4-lts" "$(mysql_ha_mysql_repo_component)"
+  assert_function_exists mysql_ha_mysql_installed_matches_target
+  ( export MYSQL_HA_VERSION="8.4"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
+    mysqld() { echo "/usr/sbin/mysqld  Ver 8.4.9 for Linux on x86_64"; }
+    mysql_ha_mysql_installed_matches_target || fail "expected installed MySQL 8.4 to match target" )
+  ( export MYSQL_HA_VERSION="8.4"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
+    mysqld() { echo "/usr/sbin/mysqld  Ver 8.0.46 for Linux on x86_64"; }
+    if mysql_ha_mysql_installed_matches_target; then fail "expected installed MySQL 8.0 to mismatch target 8.4"; fi )
   assert_function_exists install_mysql
   assert_function_exists apply_apparmor_datadir
   assert_function_exists relocate_datadir
+  ( export MYSQL_HA_DATADIR="${temp_root}/existing-datadir"
+    local action_log="${temp_root}/relocate-existing.log"
+    mkdir -p "${MYSQL_HA_DATADIR}"
+    touch "${MYSQL_HA_DATADIR}/auto.cnf"
+    : >"${action_log}"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
+    systemctl() { echo "systemctl $*" >>"${action_log}"; }
+    rsync() { echo "rsync $*" >>"${action_log}"; }
+    chown() { echo "chown $*" >>"${action_log}"; }
+    chmod() { echo "chmod $*" >>"${action_log}"; }
+    apply_apparmor_datadir() { echo "apparmor" >>"${action_log}"; }
+    relocate_datadir
+    assert_not_contains "${action_log}" "rsync"
+    assert_not_contains "${action_log}" "systemctl stop mysql"
+    assert_contains "${action_log}" "apparmor" )
+  ( export MYSQL_HA_DATADIR="${temp_root}/non-empty-not-mysql"
+    local action_log="${temp_root}/relocate-non-empty.log"
+    mkdir -p "${MYSQL_HA_DATADIR}"
+    touch "${MYSQL_HA_DATADIR}/stray-file"
+    : >"${action_log}"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
+    systemctl() { echo "systemctl $*" >>"${action_log}"; }
+    rsync() { echo "rsync $*" >>"${action_log}"; }
+    if relocate_datadir 2>/dev/null; then fail "expected relocate_datadir to reject non-empty non-MySQL datadir"; fi
+    assert_not_contains "${action_log}" "rsync"
+    assert_not_contains "${action_log}" "systemctl stop mysql" )
   assert_function_exists start_mysql
   assert_function_exists bootstrap_mysql_accounts
+  assert_contains "${ROOT_DIR}/lib/mysql-ha/mysql.sh" "SUPER, REPLICATION CLIENT"
+  assert_contains "${ROOT_DIR}/lib/mysql-ha/mysql.sh" "SOURCE_SSL=1"
   assert_function_exists setup_replication
 }
 
-run_orchestrator_tests() {
+run_repman_tests() {
   local temp_root
   temp_root="$(mktemp -d)"
   trap "rm -rf '$temp_root'" RETURN
 
   export MYSQL_HA_NODE1_IP="10.0.0.1" MYSQL_HA_NODE2_IP="10.0.0.2" MYSQL_HA_NODE3_IP="10.0.0.3"
-  export MYSQL_HA_ORCH_CONF="${temp_root}/orchestrator.conf.json"
-  export MYSQL_HA_ORCH_DATADIR="${temp_root}/orch"
-  export MYSQL_HA_ORCH_PASSWORD="orchpw" MYSQL_HA_ORCH_HTTP_PASSWORD="httppw"
+  export MYSQL_HA_REPMAN_CONF="${temp_root}/config.toml"
+  export MYSQL_HA_REPMAN_UNIT="${temp_root}/replication-manager.service"
+  export MYSQL_HA_REPMAN_DATADIR="${temp_root}/repman"
+  export MYSQL_HA_REPMAN_USER="repman" MYSQL_HA_REPMAN_PASSWORD="repmanpw"
+  export MYSQL_HA_REPMAN_API_USER="admin" MYSQL_HA_REPMAN_API_PASSWORD="apipw"
+  export MYSQL_HA_REPL_PASSWORD="replpw"
+  export MYSQL_HA_SEMISYNC="on"
   load_mysql_ha
 
-  write_orchestrator_config "10.0.0.1"
-  assert_file_exists "${MYSQL_HA_ORCH_CONF}"
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"BackendDB\": \"sqlite\""
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"RaftEnabled\": true"
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"RaftBind\": \"10.0.0.1\""
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"ListenAddress\": \"10.0.0.1:3000\""
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "10.0.0.3"
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"AuthenticationMethod\": \"basic\""
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"HTTPAuthPassword\": \"httppw\""
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"ApplyMySQLPromotionAfterMasterFailover\": true"
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"FailMasterPromotionIfSQLThreadNotUpToDate\": true"
-  assert_contains "${MYSQL_HA_ORCH_CONF}" "\"ReasonableReplicationLagSeconds\": 60"
-  assert_mode "${MYSQL_HA_ORCH_CONF}" "600"
-  # JSON 合法性(无 python3 则跳过)
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -m json.tool "${MYSQL_HA_ORCH_CONF}" >/dev/null || fail "orchestrator.conf.json is not valid JSON"
-  fi
+  write_repman_config
+  assert_file_exists "${MYSQL_HA_REPMAN_CONF}"
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "[Default]"
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "monitoring-datadir = \"${temp_root}/repman\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "api-port = \"10005\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "api-credentials = \"admin:apipw\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "opensvc = false"
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "[mysql-ha]"
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "db-servers-hosts = \"10.0.0.1:3306,10.0.0.2:3306\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "db-servers-prefered-master = \"10.0.0.1:3306\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "db-servers-credential = \"repman:repmanpw\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "replication-credential = \"repl:replpw\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "replication-use-ssl = true"
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "failover-mode = \"automatic\""
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "failover-readonly-state = true"
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "failover-superreadonly-state = true"
+  assert_contains "${MYSQL_HA_REPMAN_CONF}" "failover-at-sync = true"
+  assert_mode "${MYSQL_HA_REPMAN_CONF}" "600"
 
-  assert_function_exists write_orchestrator_client_cnf
-  assert_function_exists write_orchestrator_unit
-  assert_function_exists install_orchestrator
-  assert_function_exists start_orchestrator
-  assert_function_exists orchestrator_discover
+  assert_function_exists write_repman_unit
+  assert_function_exists install_repman
+  assert_contains "${ROOT_DIR}/lib/mysql-ha/repman.sh" "repo.signal18.io/deb"
+  assert_contains "${ROOT_DIR}/lib/mysql-ha/repman.sh" "replication-manager-osc="
+  assert_contains "${ROOT_DIR}/lib/mysql-ha/repman.sh" "--force-confold"
+  assert_function_exists start_repman
+
+  local fake_bin="${temp_root}/bin"
+  mkdir -p "$fake_bin"
+  printf '#!/usr/bin/env sh\nexit 0\n' >"${fake_bin}/replication-manager"
+  chmod 755 "${fake_bin}/replication-manager"
+  MYSQL_HA_REPMAN_BIN="${fake_bin}/replication-manager" PATH="${fake_bin}:$PATH" write_repman_unit
+  assert_file_exists "${temp_root}/replication-manager.service"
+  assert_contains "${temp_root}/replication-manager.service" "ExecStart=${fake_bin}/replication-manager --config ${temp_root}/config.toml monitor"
 }
 
 run_mysqlchk_tests() {
@@ -227,6 +297,7 @@ run_mysqlchk_tests() {
   assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "HTTP/1.1 200 OK"
   assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "HTTP/1.1 503 Service Unavailable"
   assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "Content-Length"
+  assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" "read -r -t"
   # 必须用 printf 输出 CRLF,不用 echo
   assert_contains "${MYSQL_HA_MYSQLCHK_SCRIPT}" 'printf'
   grep -q $'\\\\r\\\\n' "${MYSQL_HA_MYSQLCHK_SCRIPT}" || fail "mysqlchk must emit CRLF (\\r\\n)"
@@ -247,40 +318,6 @@ run_mysqlchk_tests() {
 
   assert_function_exists setup_mysqlchk
   assert_function_exists start_mysqlchk
-}
-
-run_watcher_tests() {
-  local temp_root
-  temp_root="$(mktemp -d)"
-  trap "rm -rf '$temp_root'" RETURN
-
-  export MYSQL_HA_NODE_IP="10.0.0.1" MYSQL_HA_CLUSTER_NAME="mysql-ha"
-  export MYSQL_HA_WATCHER_SCRIPT="${temp_root}/mysql-ha-watcher"
-  export MYSQL_HA_WATCHER_UNIT="${temp_root}/mysql-ha-watcher.service"
-  export MYSQL_HA_WATCHER_CNF="${temp_root}/watcher.cnf"
-  export MYSQL_HA_WATCHER_PASSWORD="watchpw" MYSQL_HA_ORCH_HTTP_PASSWORD="httppw"
-  load_mysql_ha
-
-  write_watcher_script
-  assert_file_exists "${MYSQL_HA_WATCHER_SCRIPT}"
-  # 三分支:失多数票自我隔离 / 本机是主→可写 / 别人是主→只读
-  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "super_read_only=ON"
-  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "read_only=OFF"
-  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "raft-health"
-  assert_contains "${MYSQL_HA_WATCHER_SCRIPT}" "api/master"
-
-  write_watcher_cnf
-  assert_contains "${MYSQL_HA_WATCHER_CNF}" "user=watcher"
-  assert_contains "${MYSQL_HA_WATCHER_CNF}" "password=watchpw"
-  assert_contains "${MYSQL_HA_WATCHER_CNF}" "http_password = httppw"
-  assert_mode "${MYSQL_HA_WATCHER_CNF}" "600"
-
-  write_watcher_unit
-  assert_contains "${MYSQL_HA_WATCHER_UNIT}" "Restart=always"
-  assert_contains "${MYSQL_HA_WATCHER_UNIT}" "ExecStart=${temp_root}/mysql-ha-watcher"
-
-  assert_function_exists setup_watcher
-  assert_function_exists start_watcher
 }
 
 run_haproxy_tests() {
@@ -313,9 +350,9 @@ run_haproxy_tests() {
 run_docs_tests() {
   local readme="${ROOT_DIR}/README.md"
   assert_contains "$readme" "install-mysql-ha.sh"
-  assert_contains "$readme" "Orchestrator"
+  assert_contains "$readme" "Replication Manager"
   assert_contains "$readme" "MYSQL_HA_NODE1_IP"
-  assert_contains "$readme" "mysql-ha-watcher"
+  assert_contains "$readme" "MYSQL_HA_REPMAN_PASSWORD"
 }
 
 run_orchestration_tests() {
@@ -325,9 +362,9 @@ run_orchestration_tests() {
   action_log="${temp_root}/actions.log"
 
   export MYSQL_HA_NODE1_IP="10.0.0.1" MYSQL_HA_NODE2_IP="10.0.0.2" MYSQL_HA_NODE3_IP="10.0.0.3"
-  export MYSQL_HA_ORCH_PASSWORD=x MYSQL_HA_ORCH_HTTP_PASSWORD=x
+  export MYSQL_HA_REPMAN_PASSWORD=x MYSQL_HA_REPMAN_API_PASSWORD=x
   export MYSQL_HA_ROOT_PASSWORD=x MYSQL_HA_REPL_PASSWORD=x MYSQL_HA_MYSQLCHK_PASSWORD=x
-  export MYSQL_HA_WATCHER_PASSWORD=x MYSQL_HA_APP_PASSWORD=x MYSQL_HA_STATS_PASSWORD=x
+  export MYSQL_HA_APP_PASSWORD=x MYSQL_HA_STATS_PASSWORD=x
   export MYSQL_HA_APP_ALLOWED_CIDR="10.0.0.0/24"
   load_mysql_ha
 
@@ -336,55 +373,54 @@ run_orchestration_tests() {
   detect_os() { :; }
   mysql_ha_check_time_sync() { :; }
   mysql_ha_preflight_connectivity() { :; }
-  mysql_ha_wait_raft_quorum() { :; }
   install_mysql() { echo install_mysql >>"$action_log"; }
   relocate_datadir() { echo relocate_datadir >>"$action_log"; }
   write_my_cnf() { echo "write_my_cnf $1 $2" >>"$action_log"; }
   start_mysql() { echo start_mysql >>"$action_log"; }
   bootstrap_mysql_accounts() { echo bootstrap_mysql_accounts >>"$action_log"; }
   setup_replication() { echo setup_replication >>"$action_log"; }
-  install_orchestrator() { echo install_orchestrator >>"$action_log"; }
-  write_orchestrator_client_cnf() { echo write_orchestrator_client_cnf >>"$action_log"; }
-  write_orchestrator_config() { echo write_orchestrator_config >>"$action_log"; }
-  start_orchestrator() { echo start_orchestrator >>"$action_log"; }
-  orchestrator_discover() { echo orchestrator_discover >>"$action_log"; }
+  install_repman() { echo install_repman >>"$action_log"; }
+  write_repman_config() { echo write_repman_config >>"$action_log"; }
+  write_repman_unit() { echo write_repman_unit >>"$action_log"; }
+  start_repman() { echo start_repman >>"$action_log"; }
   setup_mysqlchk() { echo setup_mysqlchk >>"$action_log"; }
   start_mysqlchk() { echo start_mysqlchk >>"$action_log"; }
   install_haproxy() { echo install_haproxy >>"$action_log"; }
   start_haproxy() { echo start_haproxy >>"$action_log"; }
-  setup_watcher() { echo setup_watcher >>"$action_log"; }
-  start_watcher() { echo start_watcher >>"$action_log"; }
   mysql_ha_show_summary() { echo summary >>"$action_log"; }
 
-  # arbiter:仅 orchestrator
+  # arbiter:仅 Replication Manager
   : >"$action_log"
   mysql_ha_collect_config() { MYSQL_HA_ROLE=arbiter; MYSQL_HA_NODE_NAME=node3; MYSQL_HA_NODE_IP=10.0.0.3; MYSQL_HA_SERVER_ID=0; }
   mysql_ha_main
-  assert_contains "$action_log" "install_orchestrator"
+  assert_contains "$action_log" "install_repman"
+  assert_contains "$action_log" "write_repman_config"
+  assert_contains "$action_log" "start_repman"
   assert_not_contains "$action_log" "install_mysql"
   assert_not_contains "$action_log" "install_haproxy"
-  assert_not_contains "$action_log" "setup_watcher"
 
-  # primary:mysql + 建账号 + orchestrator + discover + mysqlchk + haproxy + watcher;不配复制
+  # primary:mysql + 建账号 + mysqlchk + haproxy;不配复制
   : >"$action_log"
   mysql_ha_collect_config() { MYSQL_HA_ROLE=primary; MYSQL_HA_NODE_NAME=node1; MYSQL_HA_NODE_IP=10.0.0.1; MYSQL_HA_SERVER_ID=1; }
   mysql_ha_main
   assert_contains "$action_log" "install_mysql"
   assert_contains "$action_log" "write_my_cnf 1 primary"
   assert_contains "$action_log" "bootstrap_mysql_accounts"
-  assert_contains "$action_log" "orchestrator_discover"
-  assert_contains "$action_log" "setup_watcher"
+  assert_contains "$action_log" "setup_mysqlchk"
+  assert_contains "$action_log" "start_haproxy"
+  assert_not_contains "$action_log" "install_repman"
   assert_not_contains "$action_log" "setup_replication"
 
-  # replica:mysql + 配复制 + orchestrator + mysqlchk + haproxy + watcher;不建账号/不 discover
+  # replica:mysql + 配复制 + mysqlchk + haproxy;不建账号
   : >"$action_log"
   mysql_ha_collect_config() { MYSQL_HA_ROLE=replica; MYSQL_HA_NODE_NAME=node2; MYSQL_HA_NODE_IP=10.0.0.2; MYSQL_HA_SERVER_ID=2; }
   mysql_ha_main
   assert_contains "$action_log" "write_my_cnf 2 replica"
   assert_contains "$action_log" "setup_replication"
-  assert_contains "$action_log" "setup_watcher"
+  assert_contains "$action_log" "setup_mysqlchk"
+  assert_contains "$action_log" "start_haproxy"
+  assert_not_contains "$action_log" "install_repman"
   assert_not_contains "$action_log" "bootstrap_mysql_accounts"
-  assert_not_contains "$action_log" "orchestrator_discover"
 }
 
 main() {
@@ -395,13 +431,12 @@ main() {
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
     mysqlcnf) run_mysql_cnf_tests ;;
-    orchestrator) run_orchestrator_tests ;;
+    repman) run_repman_tests ;;
     mysqlchk) run_mysqlchk_tests ;;
-    watcher) run_watcher_tests ;;
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_orchestrator_tests; run_mysqlchk_tests; run_watcher_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
