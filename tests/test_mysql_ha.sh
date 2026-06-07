@@ -513,6 +513,8 @@ run_docs_tests() {
   assert_contains "$readme" "Replication Manager"
   assert_contains "$readme" "MYSQL_HA_NODE1_IP"
   assert_contains "$readme" "MYSQL_HA_REPMAN_PASSWORD"
+  assert_contains "$readme" "status-mysql-ha.sh"
+  assert_contains "$readme" "ha-status.sh"
 }
 
 run_orchestration_tests() {

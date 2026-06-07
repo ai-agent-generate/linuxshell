@@ -774,6 +774,9 @@ run_docs_tests() {
   assert_contains "$readme" "install-pg-ha.sh"
   assert_contains "$readme" "Patroni"
   assert_contains "$readme" "PG_HA_NODE1_IP"
+  assert_contains "$readme" "ha-status.sh"
+  assert_contains "$readme" "status-pg-ha.sh"
+  assert_contains "$readme" "HA 状态巡检"
 }
 
 run_skeleton_tests() {
