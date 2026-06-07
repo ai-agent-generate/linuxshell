@@ -40,6 +40,7 @@ mysql_ha_status_detect_role() {
     MYSQL_HA_DETECTED_ROLE="unknown"
   fi
   printf '%s' "${MYSQL_HA_DETECTED_ROLE}"
+  return 0
 }
 
 mysql_ha_status_identity() {

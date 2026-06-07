@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lib/pg-ha/status.sh — PostgreSQL HA 只读巡检
 # 依赖:lib/common.sh + lib/status-common.sh + lib/pg-ha/config.sh + lib/pg-ha/common.sh
-set -euo pipefail
+# 被 source 的模块，不自带 set -euo pipefail（与现有 lib 模块一致，由入口脚本统一设置）
 
 PG_HA_DETECTED_ROLE=""
 PG_HA_LOCAL_IP=""
