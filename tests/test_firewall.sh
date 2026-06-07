@@ -33,6 +33,7 @@ load_firewall() {
   source "${ROOT_DIR}/lib/firewall/rules.sh"
   source "${ROOT_DIR}/lib/firewall/docker.sh"
   source "${ROOT_DIR}/lib/firewall/k3s.sh"
+  source "${ROOT_DIR}/lib/firewall/trust.sh"
   source "${ROOT_DIR}/lib/firewall/service.sh"
   source "${ROOT_DIR}/lib/firewall/menu.sh"
   source "${ROOT_DIR}/lib/firewall/main.sh"
@@ -369,6 +370,28 @@ run_lockout_tests() {
   )
 }
 
+run_trust_validate_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  load_firewall
+
+  # 单个 IPv4/IPv6 通过
+  fw_validate_trust_ip 203.0.113.10 || fail "single ipv4 should pass"
+  fw_validate_trust_ip "2001:db8::1" || fail "single ipv6 should pass"
+  # any / 网段 / 畸形 一律拒绝
+  if fw_validate_trust_ip any 2>/dev/null; then fail "any should fail"; fi
+  if fw_validate_trust_ip 10.0.0.0/24 2>/dev/null; then fail "ipv4 cidr should fail"; fi
+  if fw_validate_trust_ip "2001:db8::/32" 2>/dev/null; then fail "ipv6 cidr should fail"; fi
+  if fw_validate_trust_ip garbage 2>/dev/null; then fail "garbage should fail"; fi
+
+  # fw_trust_ips 只读 trust 行
+  fw_rules_add "host allow tcp 22 any SSH"
+  fw_rules_add "trust - - - 203.0.113.10 office"
+  fw_rules_add "trust - - - 2001:db8::1 jump"
+  assert_equals "203.0.113.10" "$(fw_trust_ips | head -1)"
+  assert_equals "2" "$(fw_trust_ips | wc -l | tr -d ' ')"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -378,6 +401,7 @@ main() {
     rulesfile) run_rulesfile_tests ;;
     swap) run_swap_tests ;;
     lockout) run_lockout_tests ;;
+    trust_validate) run_trust_validate_tests ;;
     apply) run_apply_tests ;;
     docker) run_docker_tests ;;
     k3s) run_k3s_tests ;;
@@ -387,7 +411,7 @@ main() {
     orchestration) run_orchestration_tests ;;
     failopen) run_failopen_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_trust_validate_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
