@@ -280,6 +280,16 @@ run_orchestration_tests() {
   assert_contains "$log" "status"
 }
 
+run_docs_tests() {
+  local readme="${ROOT_DIR}/README.md"
+  assert_contains "$readme" "install-firewall.sh"
+  assert_contains "$readme" "/usr/local/bin/fw"
+  assert_contains "$readme" "fw apply"
+  assert_contains "$readme" "DOCKER-USER"
+  assert_contains "$readme" "deny-by-default"
+  assert_contains "$readme" "10.42.0.0/16"
+}
+
 run_disable_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   local log="${temp_root}/sys.log"
@@ -347,7 +357,8 @@ main() {
     service) run_service_tests ;;
     disable) run_disable_tests ;;
     orchestration) run_orchestration_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests ;;
+    docs) run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
