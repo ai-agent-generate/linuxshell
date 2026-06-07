@@ -29,6 +29,13 @@ assert_equals() {
   [[ "$expected" == "$actual" ]] || fail "expected '$expected' but got '$actual'"
 }
 
+# 单独加载共享巡检库(依赖 lib/common.sh)
+load_status_common() {
+  # shellcheck disable=SC1090,SC1091
+  source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
+}
+
 # 按依赖顺序加载 PG-HA 全部模块(Task 2+ 占位模块就绪后由各 suite 调用)。
 # 注意:lib/common.sh 是全局公共库,lib/pg-ha/common.sh 是 PG-HA 专用函数。
 load_pg_ha() {
@@ -40,6 +47,61 @@ load_pg_ha() {
   source "${ROOT_DIR}/lib/pg-ha/patroni.sh"
   source "${ROOT_DIR}/lib/pg-ha/haproxy.sh"
   source "${ROOT_DIR}/lib/pg-ha/main.sh"
+}
+
+run_status_common_tests() {
+  load_status_common
+
+  # 退出码: 全 OK -> 0
+  ( status_reset
+    status_ok "svc a" "active"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "0" "$rc" )
+
+  # WARN -> 1
+  ( status_reset
+    status_warn "disk" "85%"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "1" "$rc" )
+
+  # CRIT 优先于 WARN -> 2
+  ( status_reset
+    status_warn "disk" "85%"; status_crit "replica down"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "2" "$rc"
+    assert_equals "1" "${STATUS_WARN_COUNT}"
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # INFO 不计入
+  ( status_reset
+    status_info "etcd-quorum 节点跳过 PG 检查"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "0" "$rc" )
+
+  # NO_COLOR / 非 tty 下输出无 ANSI 转义
+  ( export NO_COLOR=1
+    source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    local out; out="$(status_ok "x" "y")"
+    case "$out" in *$'\033'*) fail "expected no ANSI escape when NO_COLOR set" ;; esac )
+
+  # 默认阈值
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    assert_equals "3" "${STATUS_RECHECK_DELAY}"
+    assert_equals "80" "${STATUS_DISK_WARN_PCT}"
+    assert_equals "90" "${STATUS_DISK_CRIT_PCT}"
+    assert_equals "512" "${STATUS_PG_LAG_CRIT_MB}"
+    assert_equals "30" "${STATUS_MYSQL_LAG_WARN_SEC}"
+    assert_equals "20" "${STATUS_LOG_LINES}" )
+
+  # 阈值可覆盖
+  ( export STATUS_DISK_WARN_PCT=70 STATUS_LOG_LINES=50
+    source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    assert_equals "70" "${STATUS_DISK_WARN_PCT}"
+    assert_equals "50" "${STATUS_LOG_LINES}" )
+
+  assert_function_exists status_section
+  assert_function_exists status_kv
+  assert_function_exists status_summary
 }
 
 run_config_tests() {
@@ -424,6 +486,7 @@ run_skeleton_tests() {
 main() {
   local suite="${1:-all}"
   case "$suite" in
+    status_common) run_status_common_tests ;;
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
@@ -433,7 +496,7 @@ main() {
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_status_common_tests; run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
