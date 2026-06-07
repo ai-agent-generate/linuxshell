@@ -51,11 +51,50 @@ fw_rules_read() {
     printf '%s\n' "$line"
   done < "$FW_RULES_FILE"
 }
-fw_chain_swap() { :; }
-fw_reassert_top() { :; }
-fw_preflight() { :; }
-fw_have_xt() { :; }
-fw_detect_ssh_ports() { :; }
+fw_have_xt() { iptables -m "$1" -h >/dev/null 2>&1; }
+
+fw_preflight() {
+  require_root
+  detect_os
+  command_exists iptables || fw_die "缺少 iptables,请先 apt-get install -y iptables"
+  modprobe nf_conntrack 2>/dev/null || true
+  fw_have_xt conntrack || fw_die "缺少 xt_conntrack,无法按状态过滤"
+  fw_have_xt comment   || fw_die "缺少 xt_comment,fw-managed 标记依赖它"
+  fw_have_xt multiport || fw_die "缺少 xt_multiport"
+  if [[ -e /proc/net/if_inet6 ]] && command_exists ip6tables; then
+    FW_HAVE_IPV6=1
+  else
+    FW_HAVE_IPV6=0
+  fi
+}
+
+# 取并集:当前 SSH 连接端口 + sshd 实际监听端口 + 兜底,保证不锁死
+fw_detect_ssh_ports() {
+  {
+    [[ -n "${SSH_CONNECTION:-}" ]] && awk '{print $4}' <<<"$SSH_CONNECTION"
+    if command_exists sshd; then sshd -T 2>/dev/null | awk '/^port /{print $2}'; fi
+    echo "$FW_SSH_PORT"
+  } | grep -E '^[0-9]+$' | sort -u
+}
+
+# build-then-swap:新链灌满规则后才上线、再删旧跳转、最后原子重命名,全程父链有有效跳转
+# 用法:fw_chain_swap <iptables-bin> <parent> <chain> <build-fn>;build-fn 收到 (ipt, 链名)
+fw_chain_swap() {
+  local ipt="$1" parent="$2" chain="$3" build="$4" tmp="${3}-NEW"
+  if "$ipt" -nL "$tmp" >/dev/null 2>&1; then "$ipt" -F "$tmp"; else "$ipt" -N "$tmp"; fi
+  "$build" "$ipt" "$tmp"
+  "$ipt" -I "$parent" 1 -j "$tmp"
+  while "$ipt" -C "$parent" -j "$chain" 2>/dev/null; do "$ipt" -D "$parent" -j "$chain"; done
+  if "$ipt" -nL "$chain" >/dev/null 2>&1; then "$ipt" -F "$chain"; "$ipt" -X "$chain"; fi
+  "$ipt" -E "$tmp" "$chain"
+}
+
+# 把跳转强制重排到父链第 1 条(应对 kube-proxy reconcile 后下沉)
+fw_reassert_top() {
+  local parent="$1" chain="$2" ipt="$3"
+  while "$ipt" -C "$parent" -j "$chain" 2>/dev/null; do "$ipt" -D "$parent" -j "$chain"; done
+  "$ipt" -I "$parent" 1 -j "$chain"
+}
 
 # 追加一条规则(原子写,目录 700 / 文件 600)
 fw_rules_add() {

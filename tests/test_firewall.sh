@@ -131,6 +131,41 @@ run_rulesfile_tests() {
   fw_rules_read | grep -Fq "80,443" || fail "wrong line deleted"
 }
 
+run_swap_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  load_firewall
+  iptables() {
+    echo "iptables $*" >>"$log"
+    case "$1" in -nL) return 1 ;; -C) return 1 ;; esac
+    return 0
+  }
+  : >"$log"
+  demo_build() { local ipt="$1" c="$2"; "$ipt" -A "$c" -i lo -j ACCEPT; }
+  fw_chain_swap iptables INPUT FW-INPUT demo_build
+  assert_order "$log" "-N FW-INPUT-NEW" "-A FW-INPUT-NEW"
+  assert_order "$log" "-A FW-INPUT-NEW" "-I INPUT 1 -j FW-INPUT-NEW"
+  assert_order "$log" "-I INPUT 1 -j FW-INPUT-NEW" "-E FW-INPUT-NEW FW-INPUT"
+  assert_contains "$log" "-E FW-INPUT-NEW FW-INPUT"
+}
+
+run_lockout_tests() {
+  load_firewall
+  ( export SSH_CONNECTION="1.2.3.4 51000 5.6.7.8 22022"
+    command_exists() { case "$1" in sshd) return 0 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+    sshd() { [[ "$1" == "-T" ]] && echo "port 2222"; }
+    local ports; ports="$(fw_detect_ssh_ports)"
+    grep -qx 2222 <<<"$ports" || fail "expected sshd port 2222"
+    grep -qx 22022 <<<"$ports" || fail "expected SSH_CONNECTION port 22022"
+  )
+  ( unset SSH_CONNECTION
+    command_exists() { case "$1" in sshd) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+    export FW_SSH_PORT=22
+    local ports; ports="$(fw_detect_ssh_ports)"
+    grep -qx 22 <<<"$ports" || fail "expected fallback port 22"
+  )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -138,7 +173,9 @@ main() {
     skeleton) run_skeleton_tests ;;
     validate) run_validate_tests ;;
     rulesfile) run_rulesfile_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests ;;
+    swap) run_swap_tests ;;
+    lockout) run_lockout_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
