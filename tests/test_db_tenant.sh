@@ -86,6 +86,16 @@ run_common_tests() {
   db_tenant_is_system_name "replication_manager_schema" "${DB_TENANT_MYSQL_SYSTEM_DATABASES}" || fail "rms is system db"
   if db_tenant_is_system_name "acme" "${DB_TENANT_PG_SYSTEM_NAMES}"; then fail "acme is not system"; fi
 
+  assert_function_exists db_tenant_validate_host
+  db_tenant_validate_host "%" || fail "% host should be valid"
+  db_tenant_validate_host "10.0.0.%" || fail "cidr-ish host should be valid"
+  db_tenant_validate_host "localhost" || fail "localhost should be valid"
+  db_tenant_validate_host "10.0.0.0/255.255.255.0" || fail "netmask host should be valid"
+  if db_tenant_validate_host "a'b" 2>/dev/null; then fail "quote host must be rejected"; fi
+  if db_tenant_validate_host "a;b" 2>/dev/null; then fail "semicolon host must be rejected"; fi
+  if db_tenant_validate_host "a b" 2>/dev/null; then fail "space host must be rejected"; fi
+  if db_tenant_validate_host "" 2>/dev/null; then fail "empty host must be rejected"; fi
+
   local pw; pw="$(db_tenant_generate_password)"
   [[ "$pw" =~ ^[A-Za-z0-9]+$ ]] || fail "password must be alphanumeric: $pw"
   assert_equals "25" "${#pw}"
@@ -322,6 +332,77 @@ run_pg_safety_tests() {
     assert_not_contains "$log" "BACKUP_RAN" )
 }
 
+run_mysql_safety_tests() {
+  load_db_tenant
+  assert_function_exists mysql_detect_target
+  assert_function_exists mysql_resolve_admin_password
+  assert_function_exists mysql_exec_sql
+  assert_function_exists mysql_query
+  assert_function_exists mysql_assert_writable
+  assert_function_exists mysql_guard_not_system
+  assert_function_exists mysql_backup_tenant
+  assert_function_exists mysql_drop_tenant
+
+  local tmp; tmp="$(mktemp -d)"; trap "rm -rf '$tmp'" RETURN
+  local log="${tmp}/exec.log"
+
+  # 备份失败 -> 不 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_guard_not_system() { return 0; }
+    mysql_query() { echo "1"; }
+    mysql_backup_tenant() { return 1; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    if mysql_drop_tenant acme '%' acme 2>/dev/null; then fail "drop must abort when backup fails"; fi
+    assert_not_contains "$log" "DROP" )
+
+  # 备份成功 + 确认匹配 -> DROP 精确 user@host
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk2"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_guard_not_system() { return 0; }
+    mysql_query() { echo "1"; }
+    mysql_backup_tenant() { return 0; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    mysql_drop_tenant acme '%' acme || fail "drop should succeed"
+    assert_contains "$log" "DROP USER IF EXISTS 'acme'@'%';" )
+
+  # 守卫拒绝 -> 不备份、不 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk3"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_guard_not_system() { return 1; }
+    mysql_backup_tenant() { echo "BACKUP_RAN" >>"$log"; return 0; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    if mysql_drop_tenant acme '%' acme 2>/dev/null; then fail "drop must abort when guard rejects"; fi
+    assert_not_contains "$log" "DROP"
+    assert_not_contains "$log" "BACKUP_RAN" )
+
+  # 只读拒绝 -> 不备份、不 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk4"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 1; }
+    mysql_guard_not_system() { return 0; }
+    mysql_backup_tenant() { echo "BACKUP_RAN" >>"$log"; return 0; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    if mysql_drop_tenant acme '%' acme 2>/dev/null; then fail "drop must abort on read-only"; fi
+    assert_not_contains "$log" "DROP"
+    assert_not_contains "$log" "BACKUP_RAN" )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -332,7 +413,8 @@ main() {
     pg_sql) run_pg_sql_tests ;;
     mysql_sql) run_mysql_sql_tests ;;
     pg_safety) run_pg_safety_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests ;;
+    mysql_safety) run_mysql_safety_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests; run_mysql_safety_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

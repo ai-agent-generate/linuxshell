@@ -12,6 +12,16 @@ db_tenant_validate_identifier() {
   return 0
 }
 
+# MySQL host 校验:允许 [A-Za-z0-9._%:/-](防注入,host 在 SQL 里仅单引号包裹)
+db_tenant_validate_host() {
+  local h="$1"
+  if [[ -z "$h" ]]; then echo "host 不能为空" >&2; return 1; fi
+  if [[ ! "$h" =~ ^[A-Za-z0-9._%:/-]+$ ]]; then
+    echo "非法 host(只允许字母数字与 . _ % : / -): $h" >&2; return 1
+  fi
+  return 0
+}
+
 # $1=name $2=空格分隔名单 -> 命中返回0
 db_tenant_is_system_name() {
   local name="$1" list="$2" item
