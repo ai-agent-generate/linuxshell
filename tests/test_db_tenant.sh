@@ -540,6 +540,32 @@ run_action_tests() {
     assert_contains "$log" "ALTER USER 'acme'@'%' WITH MAX_USER_CONNECTIONS 9" )
 }
 
+run_dispatch_tests() {
+  load_db_tenant
+  assert_function_exists db_tenant_dispatch
+  assert_function_exists db_tenant_main
+  assert_function_exists db_tenant_action_menu
+  assert_function_exists db_tenant_drop_action
+  assert_function_exists db_tenant_backup_action
+
+  local tmp; tmp="$(mktemp -d)"; trap "rm -rf '$tmp'" RETURN
+  local log="${tmp}/dispatch.log"
+
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    source "${ROOT_DIR}/lib/db-tenant/mysql.sh"; source "${ROOT_DIR}/lib/db-tenant/main.sh"
+    : >"$log"
+    pg_create_tenant() { echo "pg_create" >>"$log"; }
+    db_tenant_dispatch pg 1
+    assert_contains "$log" "pg_create"
+
+    : >"$log"
+    mysql_drop_tenant() { echo "mysql_drop $*" >>"$log"; }
+    prompt_with_default() { if [[ -z "${2:-}" ]]; then echo "acme"; else echo "$2"; fi; }
+    db_tenant_dispatch mysql 6
+    assert_contains "$log" "mysql_drop acme % acme" )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -552,7 +578,8 @@ main() {
     pg_safety) run_pg_safety_tests ;;
     mysql_safety) run_mysql_safety_tests ;;
     action) run_action_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests; run_mysql_safety_tests; run_action_tests ;;
+    dispatch) run_dispatch_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests; run_mysql_safety_tests; run_action_tests; run_dispatch_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
