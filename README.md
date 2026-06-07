@@ -205,3 +205,33 @@ DATA_ROOT=/opt/data bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent
 | `RABBITMQ_IMAGE` | `rabbitmq:management` | RabbitMQ 镜像 |
 | `REDIS_IMAGE` | `redis:8.6.1` | Redis 镜像 |
 | `SHARED_NETWORK_NAME` | `my_network` | Docker 共享网络名 |
+
+## 防火墙管理（iptables，与 Docker/k3s 共存）
+
+在同时跑 Docker 和 k3s 的服务器上交互式管理防火墙规则。底层用 iptables 自管理,不依赖 ufw/firewalld;主机入站 `INPUT` 默认 DROP 白名单,Docker 发布端口 deny-by-default,k3s 节点逐端口放行。
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/install-firewall.sh)
+```
+
+安装后用 `fw` 命令（无参进交互菜单）：
+
+```bash
+fw                # 交互菜单:查看/添加/删除/启停
+fw status         # 当前状态(policy/跳转/规则数)
+fw list           # 列出规则
+fw apply          # 重新应用(docker daemon 重启后需手动跑)
+fw disable 30m    # 临时禁用,30 分钟后自动恢复
+```
+
+**Docker 端口 deny-by-default**：容器发布端口（经 `DOCKER-USER`）默认拒绝外部访问,即使 `INPUT=DROP` 也不让 redis/mysql 等绕过暴露。对外服务（如 Caddy 80/443）需在菜单"添加 Docker 端口放行"登记来源。
+
+**k3s 节点**：菜单录入各节点 IP,脚本逐端口放行 k3s 必需端口（`6443/10250/2379-2380` TCP、`8472` UDP VXLAN）及 CNI（pod `10.42.0.0/16`、`cni0`/`flannel.1`）。改了 k3s 默认 CIDR/端口用环境变量覆盖。
+
+**IPv6**：自动同管（ip6tables 镜像,放行 NDP/echo 必需 ICMPv6,排除 redirect）。
+
+**关键环境变量**：`FW_RULES_FILE`（默认 `/etc/linuxshell-fw/rules.conf`）、`FW_BIN`（默认 `/usr/local/bin/fw`）、`FW_SSH_PORT`、`FW_K3S_TCP_PORTS`/`FW_K3S_UDP_PORTS`/`FW_K3S_POD_CIDR`、`FW_LIB_DIR`。
+
+**已知局限**：Docker daemon 单独重启会重置 `DOCKER-USER`,需 `fw apply` 重建（boot 时 systemd 自动重建）；kube-proxy 周期 reconcile 可能短暂重排 INPUT,`fw apply` 会重新置顶。apply 失败时查 `fw status`。
+
+> 防火墙是安全关键组件,远程 `curl|bash` 前请核对脚本来源。
