@@ -159,6 +159,20 @@ run_mysql_status_tests() {
   assert_function_exists mysql_ha_status_config_audit
 }
 
+run_status_skeleton_tests() {
+  local entry="${ROOT_DIR}/status-mysql-ha.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected status-mysql-ha.sh to be executable"
+  bash -n "$entry" || fail "status-mysql-ha.sh has syntax errors"
+  assert_contains "$entry" "lib/common.sh"
+  assert_contains "$entry" "lib/status-common.sh"
+  assert_contains "$entry" "lib/mysql-ha/status.sh"
+  assert_contains "$entry" "mysql_ha_status_main"
+  assert_contains "$entry" "require_root"
+  bash -n "${ROOT_DIR}/lib/status-common.sh" || fail "status-common.sh syntax error"
+  bash -n "${ROOT_DIR}/lib/mysql-ha/status.sh" || fail "mysql-ha/status.sh syntax error"
+}
+
 run_config_tests() {
   ( unset DATA_ROOT MYSQL_HA_DATADIR MYSQL_HA_ORCH_DATADIR
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"
@@ -558,6 +572,7 @@ main() {
   local suite="${1:-all}"
   case "$suite" in
     mysql_status) run_mysql_status_tests ;;
+    status_skeleton) run_status_skeleton_tests ;;
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
@@ -568,7 +583,7 @@ main() {
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
     docs) run_docs_tests ;;
-    all) run_mysql_status_tests; run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_mysql_status_tests; run_skeleton_tests; run_status_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
