@@ -12,13 +12,17 @@ mysql_ha_repman_arch() {
 
 write_repman_config() {
   mkdir -p "$(dirname "${MYSQL_HA_REPMAN_CONF}")" "${MYSQL_HA_REPMAN_DATADIR}"
+  # repman 在 datadir 生成 TLS 私钥(server-key/ca-key/client-key.pem)与状态文件,默认 644 全局可读;
+  # 收紧目录权限阻止非 root 遍历读取(repman 以 root 运行,不受影响)
+  chmod 750 "${MYSQL_HA_REPMAN_DATADIR}" 2>/dev/null || true
   local failover_at_sync="false"
   if [[ "$(to_lower "${MYSQL_HA_SEMISYNC}")" == "on" ]]; then
     failover_at_sync="true"
   fi
   cat >"${MYSQL_HA_REPMAN_CONF}" <<EOF
 [Default]
-monitoring-save-config = true
+# false: 不让 repman 把含可用凭据的配置/状态快照落盘到 datadir(默认 644 全局可读);本文件为唯一配置源
+monitoring-save-config = false
 monitoring-datadir = "${MYSQL_HA_REPMAN_DATADIR}"
 monitoring-ticker = ${MYSQL_HA_INSTANCE_POLL_SECONDS}
 api-port = "${MYSQL_HA_REPMAN_API_PORT}"
