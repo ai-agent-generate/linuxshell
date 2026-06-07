@@ -74,8 +74,8 @@ SQL
 
 # 探测目标,设置 PG_TARGET_MODE=docker|local
 pg_detect_target() {
-  if [[ "${DB_TENANT_FORCE_TARGET}" == "docker" ]]; then PG_TARGET_MODE=docker; return 0; fi
-  if [[ "${DB_TENANT_FORCE_TARGET}" == "local" ]]; then PG_TARGET_MODE=local; return 0; fi
+  if [[ "${DB_TENANT_FORCE_TARGET:-}" == "docker" ]]; then PG_TARGET_MODE=docker; return 0; fi
+  if [[ "${DB_TENANT_FORCE_TARGET:-}" == "local" ]]; then PG_TARGET_MODE=local; return 0; fi
   if command_exists docker && \
      [[ "$(docker inspect -f '{{.State.Running}}' "${DB_TENANT_PG_CONTAINER}" 2>/dev/null)" == "true" ]]; then
     PG_TARGET_MODE=docker
@@ -116,7 +116,7 @@ pg_assert_writable() {
 # 是否支持 DROP DATABASE WITH (FORCE)(PG13+)
 pg_supports_force() {
   local v; v="$(pg_query postgres 'SHOW server_version_num;')"
-  [[ -n "$v" ]] && (( v >= 130000 ))
+  [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 130000 ))
 }
 
 # 守卫:拒绝系统/超级/复制角色
@@ -141,9 +141,9 @@ pg_backup_tenant() {
   db_tenant_prepare_backup_dir || return 1
   file="$(db_tenant_backup_path pg "$db" dump)"
   if [[ "${PG_TARGET_MODE:-local}" == "docker" ]]; then
-    docker exec -i "${DB_TENANT_PG_CONTAINER}" pg_dump -U postgres -Fc -d "$db" >"$file" || { rm -f "$file"; return 1; }
+    ( umask 077; docker exec -i "${DB_TENANT_PG_CONTAINER}" pg_dump -U postgres -Fc -d "$db" >"$file" ) || { rm -f "$file"; return 1; }
   else
-    sudo -u postgres pg_dump -Fc -d "$db" >"$file" || { rm -f "$file"; return 1; }
+    ( umask 077; sudo -u postgres pg_dump -Fc -d "$db" >"$file" ) || { rm -f "$file"; return 1; }
   fi
   if ! db_tenant_verify_backup pg "$file"; then rm -f "$file"; return 1; fi
   chmod 600 "$file"

@@ -289,7 +289,37 @@ run_pg_safety_tests() {
     pg_exec_sql() { cat >>"$log"; }
     prompt_with_default() { echo "acme"; }
     pg_drop_tenant acme acme || fail "drop should succeed"
-    assert_contains "$log" "DROP ROLE IF EXISTS \"acme\";" )
+    assert_contains "$log" "DROP ROLE IF EXISTS \"acme\";"
+    assert_contains "$log" "pg_terminate_backend"
+    assert_contains "$log" "DROP DATABASE IF EXISTS \"acme\";" )
+
+  # 守卫拒绝(角色为系统/超级/复制) -> 不备份、不 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk4"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_guard_not_system_role() { return 1; }
+    pg_backup_tenant() { echo "BACKUP_RAN" >>"$log"; return 0; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    if pg_drop_tenant acme acme 2>/dev/null; then fail "drop must abort when guard rejects"; fi
+    assert_not_contains "$log" "DROP"
+    assert_not_contains "$log" "BACKUP_RAN" )
+
+  # 只读(standby)拒绝 -> 不备份、不 DROP
+  ( export DB_TENANT_BACKUP_DIR="${tmp}/bk5"
+    source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 1; }
+    pg_guard_not_system_role() { return 0; }
+    pg_backup_tenant() { echo "BACKUP_RAN" >>"$log"; return 0; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "acme"; }
+    if pg_drop_tenant acme acme 2>/dev/null; then fail "drop must abort on standby"; fi
+    assert_not_contains "$log" "DROP"
+    assert_not_contains "$log" "BACKUP_RAN" )
 }
 
 main() {
