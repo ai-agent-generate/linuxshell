@@ -415,6 +415,18 @@ run_trust_docker_tests() {
   assert_contains "$log" "fw-managed:trust-docker"
   assert_order "$log" "ESTABLISHED,RELATED -j RETURN" "fw-managed:trust-docker"
   assert_order "$log" "fw-managed:trust-docker" "ctstate DNAT -j DROP"
+
+  # 地址族过滤:v6 信任 IP 不写入 iptables(v4) 链
+  fw_rules_add "trust - - - 2001:db8::1 jump"
+  : >"$log"
+  fw_build_docker iptables FW-DOCKER-NEW
+  assert_not_contains "$log" "2001:db8::1"
+  # ip6tables(v6) 链含 v6 信任 IP、排除 v4 信任 IP
+  ip6tables() { echo "ip6tables $*" >>"$log"; return 0; }
+  : >"$log"
+  fw_build_docker6 ip6tables FW-DOCKER6-NEW
+  assert_contains "$log" "-s 2001:db8::1 -m conntrack --ctstate DNAT -j RETURN"
+  assert_not_contains "$log" "203.0.113.10"
 }
 
 run_trust_validate_tests() {
