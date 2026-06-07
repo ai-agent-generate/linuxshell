@@ -107,6 +107,10 @@ run_validate_tests() {
   fw_validate_source 10.0.0.0/24 || fail "ipv4 cidr should pass"
   fw_validate_source "2001:db8::1" || fail "ipv6 should pass"
   if fw_validate_source "garbage" 2>/dev/null; then fail "garbage should fail"; fi
+  if fw_validate_source "999.999.999.999" 2>/dev/null; then fail "oct>255 should fail"; fi
+  if fw_validate_source "10.0.0.1/99" 2>/dev/null; then fail "v4 mask>32 should fail"; fi
+  if fw_validate_source "2001:db8::1/129" 2>/dev/null; then fail "v6 mask>128 should fail"; fi
+  fw_validate_source "2001:db8::/32" || fail "valid v6 cidr should pass"
 
   assert_equals "4" "$(fw_addr_family 10.0.0.1)"
   assert_equals "6" "$(fw_addr_family 2001:db8::1)"
@@ -135,9 +139,13 @@ run_swap_tests() {
   local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
   local log="${temp_root}/ipt.log"
   load_firewall
+  local cc=0
   iptables() {
     echo "iptables $*" >>"$log"
-    case "$1" in -nL) return 1 ;; -C) return 1 ;; esac
+    case "$1" in
+      -nL) return 1 ;;
+      -C) cc=$((cc + 1)); [[ "$cc" == 1 ]] && return 0 || return 1 ;;
+    esac
     return 0
   }
   : >"$log"
@@ -145,6 +153,8 @@ run_swap_tests() {
   fw_chain_swap iptables INPUT FW-INPUT demo_build
   assert_order "$log" "-N FW-INPUT-NEW" "-A FW-INPUT-NEW"
   assert_order "$log" "-A FW-INPUT-NEW" "-I INPUT 1 -j FW-INPUT-NEW"
+  # 关键防锁断言:新跳转上线在删旧跳转之前(二次 apply 无空窗)
+  assert_order "$log" "-I INPUT 1 -j FW-INPUT-NEW" "-D INPUT -j FW-INPUT"
   assert_order "$log" "-I INPUT 1 -j FW-INPUT-NEW" "-E FW-INPUT-NEW FW-INPUT"
   assert_contains "$log" "-E FW-INPUT-NEW FW-INPUT"
 }
@@ -280,6 +290,24 @@ run_orchestration_tests() {
   assert_contains "$log" "status"
 }
 
+run_failopen_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  mkdir -p "$FW_RULES_DIR"; : >"$FW_RULES_FILE"
+  load_firewall
+  iptables() { echo "iptables $*" >>"$log"; case "$1" in -nL|-C) return 1 ;; esac; return 0; }
+  fw_preflight() { :; }
+  fw_chain_swap() { :; }
+  fw_reassert_top() { :; }
+  fw_check_rp_filter() { :; }
+  fw_detect_ssh_ports() { :; }   # 返回空 → 触发 fail-open
+  : >"$log"
+  local out; out="$(fw_apply 2>&1)"
+  if grep -Fq -- "-P INPUT DROP" "$log"; then fail "expected NO policy DROP when ssh ports empty"; fi
+  grep -Fq "跳过 INPUT DROP" <<<"$out" || fail "expected fail-open warning when ssh ports empty"
+}
+
 run_docs_tests() {
   local readme="${ROOT_DIR}/README.md"
   assert_contains "$readme" "install-firewall.sh"
@@ -357,8 +385,9 @@ main() {
     service) run_service_tests ;;
     disable) run_disable_tests ;;
     orchestration) run_orchestration_tests ;;
+    failopen) run_failopen_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests; run_docker_tests; run_k3s_tests; run_ipv6_tests; run_service_tests; run_disable_tests; run_orchestration_tests; run_failopen_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

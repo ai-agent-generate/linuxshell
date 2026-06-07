@@ -56,7 +56,12 @@ fw_apply() {
   fi
   fw_reassert_top INPUT "$FW_INPUT_CHAIN" iptables
   [[ "${FW_HAVE_IPV6:-0}" == 1 ]] && fw_reassert_top INPUT "${FW_INPUT_CHAIN}6" ip6tables
-  iptables -P INPUT DROP
-  [[ "${FW_HAVE_IPV6:-0}" == 1 ]] && ip6tables -P INPUT DROP
+  local ssh_ports; ssh_ports="$(fw_detect_ssh_ports)"
+  if [[ -n "$ssh_ports" ]]; then
+    iptables -P INPUT DROP
+    [[ "${FW_HAVE_IPV6:-0}" == 1 ]] && ip6tables -P INPUT DROP
+  else
+    echo "警告: 探测不到 SSH 端口,为防锁死跳过 INPUT DROP(防火墙保持放行)。请设置 FW_SSH_PORT 后重新 fw apply。" >&2
+  fi
   fw_check_rp_filter
 }

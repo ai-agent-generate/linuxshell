@@ -23,12 +23,23 @@ fw_validate_port() {
   [[ "$count" -le 15 ]]
 }
 
-# 来源:any / IPv4 / IPv4-CIDR / IPv6 / IPv6-CIDR / IPv4-mapped
+# 来源:any / IPv4[/mask] / IPv6[/mask];校验八位组 ≤255、掩码范围
 fw_validate_source() {
-  local s="$1"
+  local s="$1" mask o
   [[ "$s" == "any" ]] && return 0
-  [[ "$s" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]] && return 0
-  [[ "$s" == *:* && "$s" =~ ^[0-9a-fA-F:.]+(/[0-9]+)?$ ]] && return 0
+  if [[ "$s" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(/([0-9]{1,2}))?$ ]]; then
+    for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+      [[ "$o" -le 255 ]] || return 1
+    done
+    mask="${BASH_REMATCH[6]:-}"
+    [[ -n "$mask" ]] && { [[ "$mask" -le 32 ]] || return 1; }
+    return 0
+  fi
+  if [[ "$s" == *:* && "$s" =~ ^([0-9a-fA-F:.]+)(/([0-9]{1,3}))?$ ]]; then
+    mask="${BASH_REMATCH[3]:-}"
+    [[ -n "$mask" ]] && { [[ "$mask" -le 128 ]] || return 1; }
+    return 0
+  fi
   return 1
 }
 
@@ -74,7 +85,7 @@ fw_detect_ssh_ports() {
     [[ -n "${SSH_CONNECTION:-}" ]] && awk '{print $4}' <<<"$SSH_CONNECTION"
     if command_exists sshd; then sshd -T 2>/dev/null | awk '/^port /{print $2}'; fi
     echo "$FW_SSH_PORT"
-  } | grep -E '^[0-9]+$' | sort -u
+  } | grep -E '^[0-9]+$' | sort -u || true
 }
 
 # build-then-swap:新链灌满规则后才上线、再删旧跳转、最后原子重命名,全程父链有有效跳转

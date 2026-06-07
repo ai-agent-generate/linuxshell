@@ -12,7 +12,7 @@ fw_docker_allow_rules() {
 # 构建 FW-DOCKER 链:established 放行 → 白名单 RETURN → 其余 DNAT 入站 DROP
 # v4/v6 共用,按地址族过滤来源
 fw_build_docker() {  # $1=ipt $2=chain
-  local ipt="$1" c="$2" proto port src fam srcopt pp
+  local ipt="$1" c="$2" proto port src fam srcopt pp _ports
   "$ipt" -A "$c" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
   while read -r proto port src; do
     fam="$(fw_addr_family "$src")"
