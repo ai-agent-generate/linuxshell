@@ -15,10 +15,17 @@ assert_mode() { # $1=file $2=expected octal(e.g. 600)
   [[ "$m" == "$2" ]] || fail "expected mode $2 on $1 but got $m"
 }
 
+load_status_common() {
+  # shellcheck disable=SC1090,SC1091
+  source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
+}
+
 # 按依赖顺序加载 MySQL-HA 模块(测试前先 export MYSQL_HA_* 覆盖路径)
 load_mysql_ha() {
   # shellcheck disable=SC1090,SC1091
   source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
   source "${ROOT_DIR}/lib/mysql-ha/config.sh"
   source "${ROOT_DIR}/lib/mysql-ha/common.sh"
   source "${ROOT_DIR}/lib/mysql-ha/mysql.sh"
@@ -26,6 +33,160 @@ load_mysql_ha() {
   source "${ROOT_DIR}/lib/mysql-ha/mysqlchk.sh"
   source "${ROOT_DIR}/lib/mysql-ha/haproxy.sh"
   source "${ROOT_DIR}/lib/mysql-ha/main.sh"
+  source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+}
+
+run_mysql_status_tests() {
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+  load_mysql_ha
+
+  # 拓扑:arbiter 从 config.toml db-servers-hosts 解析数据节点 IP
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/config.toml"
+    printf 'db-servers-hosts = "10.0.0.1:3306,10.0.0.2:3306"\n' >"${MYSQL_HA_REPMAN_CONF}"
+    mysql_ha_status_load_topology
+    assert_equals "10.0.0.1" "${MYSQL_HA_NODE1_IP}"
+    assert_equals "10.0.0.2" "${MYSQL_HA_NODE2_IP}" )
+
+  # 角色:有 zz-mysql-ha.cnf + read_only=0 -> primary
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_MYCNF="${tdir}/zz.cnf"; : >"${MYSQL_HA_MYCNF}"
+    mysql_ha_status_local_sql() { echo "0"; }
+    mysql_ha_status_detect_role; assert_equals "primary" "${MYSQL_HA_DETECTED_ROLE}" )
+  # read_only=1 -> replica
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_MYCNF="${tdir}/zz.cnf"; : >"${MYSQL_HA_MYCNF}"
+    mysql_ha_status_local_sql() { echo "1"; }
+    mysql_ha_status_detect_role; assert_equals "replica" "${MYSQL_HA_DETECTED_ROLE}" )
+  # 无 cnf、有 config.toml -> arbiter
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_MYCNF="${tdir}/none.cnf" MYSQL_HA_REPMAN_CONF="${tdir}/config.toml"
+    mysql_ha_status_detect_role; assert_equals "arbiter" "${MYSQL_HA_DETECTED_ROLE}" )
+
+  # 服务:failed -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    status_reset; systemctl() { return 1; }
+    mysql_ha_status_service_one mysql
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  assert_function_exists mysql_ha_status_identity
+  assert_function_exists mysql_ha_status_services
+
+  # 复制:从库 IO 线程断 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=replica
+    mysql_ha_status_local_sql() { printf 'Replica_IO_Running: No\nReplica_SQL_Running: Yes\nSeconds_Behind_Source: 0\n'; }
+    status_reset; mysql_ha_status_replication
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+  # 复制:延迟超 WARN 线 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=replica
+    mysql_ha_status_local_sql() { printf 'Replica_IO_Running: Yes\nReplica_SQL_Running: Yes\nSeconds_Behind_Source: 60\n'; }
+    status_reset; mysql_ha_status_replication
+    assert_equals "1" "${STATUS_WARN_COUNT}"; assert_equals "0" "${STATUS_CRIT_COUNT}" )
+
+  # 静默退化:半同步 OFF -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    export MYSQL_HA_SEMISYNC=on; MYSQL_HA_DETECTED_ROLE=primary
+    mysql_ha_status_local_sql() { case "$1" in *source_status*) echo "Rpl_semi_sync_source_status	OFF" ;; *source_clients*) echo "Rpl_semi_sync_source_clients	0" ;; *) echo "" ;; esac; }
+    status_reset; mysql_ha_status_degradation
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+  # 静默退化:从库 read_only=0(僵尸主) -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=replica
+    mysql_ha_status_local_sql() { case "$1" in *REPLICA\ STATUS*) printf 'Replica_IO_Running: Yes\nReplica_SQL_Running: Yes\n' ;; *read_only*) echo 0 ;; esac; }
+    status_reset; mysql_ha_status_degradation
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 防脑裂:两节点 mysqlchk 都 200 -> 多主 CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary
+    export MYSQL_HA_NODE1_IP=10.0.0.1 MYSQL_HA_NODE2_IP=10.0.0.2
+    curl() { echo 200; }
+    status_reset; mysql_ha_status_splitbrain
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+  # 防脑裂:arbiter 上 repman 未运行 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=arbiter
+    systemctl() { return 1; }
+    status_reset; mysql_ha_status_splitbrain
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  assert_function_exists mysql_ha_status_topology
+  assert_function_exists mysql_ha_status_ingress
+
+  # 磁盘:超 CRIT 线 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary; export MYSQL_HA_DATADIR="${tdir}"
+    df() { printf 'F 1K Used Avail Use%% M\n/dev/x 100 95 5 95%% /\n'; }
+    status_reset; mysql_ha_status_disk
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 连接数:超 WARN 线 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary
+    mysql_ha_status_local_sql() { case "$1" in *Threads_connected*) echo "Threads_connected	85" ;; *max_connections*) echo "max_connections	100" ;; esac; }
+    status_reset; mysql_ha_status_load
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+
+  # 编排:注入 CRIT -> 退出码 2
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/common.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    mysql_ha_status_load_topology() { :; }
+    mysql_ha_status_detect_role() { MYSQL_HA_DETECTED_ROLE=primary; }
+    mysql_ha_status_identity() { :; }; mysql_ha_status_services() { :; }; mysql_ha_status_topology() { :; }
+    mysql_ha_status_replication() { :; }; mysql_ha_status_degradation() { :; }; mysql_ha_status_ingress() { :; }
+    mysql_ha_status_splitbrain() { status_crit "injected"; }
+    mysql_ha_status_disk() { :; }; mysql_ha_status_clock() { :; }; mysql_ha_status_logs() { :; }
+    mysql_ha_status_config_audit() { :; }; mysql_ha_status_load() { :; }
+    local rc=0; mysql_ha_status_main >/dev/null || rc=$?
+    assert_equals "2" "$rc" )
+
+  assert_function_exists mysql_ha_status_clock
+  assert_function_exists mysql_ha_status_config_audit
+}
+
+run_status_skeleton_tests() {
+  local entry="${ROOT_DIR}/status-mysql-ha.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected status-mysql-ha.sh to be executable"
+  bash -n "$entry" || fail "status-mysql-ha.sh has syntax errors"
+  assert_contains "$entry" "lib/common.sh"
+  assert_contains "$entry" "lib/status-common.sh"
+  assert_contains "$entry" "lib/mysql-ha/status.sh"
+  assert_contains "$entry" "mysql_ha_status_main"
+  assert_contains "$entry" "require_root"
+  bash -n "${ROOT_DIR}/lib/status-common.sh" || fail "status-common.sh syntax error"
+  bash -n "${ROOT_DIR}/lib/mysql-ha/status.sh" || fail "mysql-ha/status.sh syntax error"
+}
+
+run_status_readonly_tests() {
+  local f files="${ROOT_DIR}/lib/status-common.sh ${ROOT_DIR}/lib/mysql-ha/status.sh ${ROOT_DIR}/status-mysql-ha.sh"
+  _no() { if grep -nE "$2" "$1" >/dev/null 2>&1; then grep -nE "$2" "$1" >&2; fail "$3 in $1"; fi; }
+  for f in $files; do
+    [[ -e "$f" ]] || continue
+    _no "$f" 'systemctl[[:space:]]+(start|stop|restart|reload|enable|disable|mask|kill)' "service-control write"
+    _no "$f" 'etcdctl[^|]*(put|del|txn|user |role |auth |move-leader|snapshot|defrag)' "etcdctl write subcommand"
+    _no "$f" '(INSERT |UPDATE |DELETE |DROP |ALTER |CREATE |GRANT |REVOKE |TRUNCATE |SET +GLOBAL|FLUSH |RESET |STOP +REPLICA|START +REPLICA|CHANGE +REPLICATION)' "SQL write"
+    _no "$f" 'curl[^|]*(-X +(POST|PUT|DELETE|PATCH)|--request)' "HTTP write"
+    _no "$f" 'curl[^|]*(-u |--user )' "plaintext curl credential"
+    _no "$f" 'mysql[^|]*[[:space:]]-p[^[:space:]]' "plaintext mysql password"
+    _no "$f" '>[[:space:]]*/(etc|data|var|usr|run)/' "write to system path"
+  done
+  assert_contains "${ROOT_DIR}/lib/status-common.sh" "curl -K"
 }
 
 run_config_tests() {
@@ -353,6 +514,8 @@ run_docs_tests() {
   assert_contains "$readme" "Replication Manager"
   assert_contains "$readme" "MYSQL_HA_NODE1_IP"
   assert_contains "$readme" "MYSQL_HA_REPMAN_PASSWORD"
+  assert_contains "$readme" "status-mysql-ha.sh"
+  assert_contains "$readme" "ha-status.sh"
 }
 
 run_orchestration_tests() {
@@ -426,6 +589,9 @@ run_orchestration_tests() {
 main() {
   local suite="${1:-all}"
   case "$suite" in
+    mysql_status) run_mysql_status_tests ;;
+    status_skeleton) run_status_skeleton_tests ;;
+    status_readonly) run_status_readonly_tests ;;
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
     common) run_common_tests ;;
@@ -436,7 +602,7 @@ main() {
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_mysql_status_tests; run_skeleton_tests; run_status_skeleton_tests; run_status_readonly_tests; run_config_tests; run_common_tests; run_precheck_tests; run_mysql_cnf_tests; run_repman_tests; run_mysqlchk_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

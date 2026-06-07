@@ -29,17 +29,159 @@ assert_equals() {
   [[ "$expected" == "$actual" ]] || fail "expected '$expected' but got '$actual'"
 }
 
+# 单独加载共享巡检库(依赖 lib/common.sh)
+load_status_common() {
+  # shellcheck disable=SC1090,SC1091
+  source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
+}
+
 # 按依赖顺序加载 PG-HA 全部模块(Task 2+ 占位模块就绪后由各 suite 调用)。
 # 注意:lib/common.sh 是全局公共库,lib/pg-ha/common.sh 是 PG-HA 专用函数。
 load_pg_ha() {
   # shellcheck disable=SC1090,SC1091
   source "${ROOT_DIR}/lib/common.sh"
+  source "${ROOT_DIR}/lib/status-common.sh"
   source "${ROOT_DIR}/lib/pg-ha/config.sh"
   source "${ROOT_DIR}/lib/pg-ha/common.sh"
   source "${ROOT_DIR}/lib/pg-ha/etcd.sh"
   source "${ROOT_DIR}/lib/pg-ha/patroni.sh"
   source "${ROOT_DIR}/lib/pg-ha/haproxy.sh"
   source "${ROOT_DIR}/lib/pg-ha/main.sh"
+  source "${ROOT_DIR}/lib/pg-ha/status.sh"
+}
+
+run_status_common_tests() {
+  load_status_common
+
+  # 退出码: 全 OK -> 0
+  ( status_reset
+    status_ok "svc a" "active"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "0" "$rc" )
+
+  # WARN -> 1
+  ( status_reset
+    status_warn "disk" "85%"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "1" "$rc" )
+
+  # CRIT 优先于 WARN -> 2
+  ( status_reset
+    status_warn "disk" "85%"; status_crit "replica down"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "2" "$rc"
+    assert_equals "1" "${STATUS_WARN_COUNT}"
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # INFO 不计入
+  ( status_reset
+    status_info "etcd-quorum 节点跳过 PG 检查"
+    local rc=0; status_final_code || rc=$?
+    assert_equals "0" "$rc" )
+
+  # NO_COLOR / 非 tty 下输出无 ANSI 转义
+  ( export NO_COLOR=1
+    source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    local out; out="$(status_ok "x" "y")"
+    case "$out" in *$'\033'*) fail "expected no ANSI escape when NO_COLOR set" ;; esac )
+
+  # 默认阈值
+  ( unset STATUS_RECHECK_DELAY STATUS_DISK_WARN_PCT STATUS_DISK_CRIT_PCT STATUS_PG_LAG_CRIT_MB STATUS_MYSQL_LAG_WARN_SEC STATUS_LOG_LINES
+    source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    assert_equals "3" "${STATUS_RECHECK_DELAY}"
+    assert_equals "80" "${STATUS_DISK_WARN_PCT}"
+    assert_equals "90" "${STATUS_DISK_CRIT_PCT}"
+    assert_equals "512" "${STATUS_PG_LAG_CRIT_MB}"
+    assert_equals "30" "${STATUS_MYSQL_LAG_WARN_SEC}"
+    assert_equals "20" "${STATUS_LOG_LINES}" )
+
+  # 阈值可覆盖
+  ( export STATUS_DISK_WARN_PCT=70 STATUS_LOG_LINES=50
+    source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    assert_equals "70" "${STATUS_DISK_WARN_PCT}"
+    assert_equals "50" "${STATUS_LOG_LINES}" )
+
+  assert_function_exists status_section
+  assert_function_exists status_kv
+  assert_function_exists status_summary
+
+  # status_summary 输出包含整体级别与问题列表
+  ( status_reset; status_crit "node1 down"; status_warn "disk 90%"
+    local out; out="$(status_summary 2>&1)"
+    case "$out" in *CRITICAL*) ;; *) fail "expected CRITICAL in summary" ;; esac
+    case "$out" in *"node1 down"*) ;; *) fail "expected issue listed in summary" ;; esac )
+  # cover 计数
+  ( status_reset
+    status_cover_seen; status_cover_seen; status_cover_unreachable
+    assert_equals "2" "${STATUS_COVER_SEEN}"
+    assert_equals "1" "${STATUS_COVER_UNREACH}" )
+
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+
+  # status_extract_kv: 从 haproxy.cfg 取 stats 密码(只回显捕获组)
+  printf 'listen stats\n    stats auth admin:s3cretPW\n' >"${tdir}/haproxy.cfg"
+  local v; v="$(status_extract_kv "${tdir}/haproxy.cfg" 's/.*stats auth admin:\(.*\)/\1/p')"
+  assert_equals "s3cretPW" "$v"
+
+  # repman api-credentials 提取必须保留 user
+  printf 'api-credentials = "admin:apiPW"\n' >"${tdir}/config.toml"
+  local cred; cred="$(status_extract_kv "${tdir}/config.toml" 's/.*api-credentials = "\([^"]*\)".*/\1/p')"
+  assert_equals "admin:apiPW" "$cred"
+
+  # status_redact: 密码模式被打码
+  local red; red="$(printf 'password=topsecret\n' | status_redact)"
+  case "$red" in *topsecret*) fail "status_redact must hide password value" ;; esac
+
+  # status_curl_cred: 凭据写临时文件(-K)，不出现在 curl 命令行参数
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    local seen; seen="$(curl() { printf '%s\n' "$*"; }; status_curl_cred admin apiPW -s http://127.0.0.1:7000/)"
+    case "$seen" in *apiPW*) fail "credential leaked into curl args" ;; esac
+    case "$seen" in *-K*) : ;; *) fail "expected curl -K config-file usage" ;; esac )
+
+  # status_local_ip: 在 hostname -I 集合中匹配 NODE*_IP
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    hostname() { echo "10.0.0.2 172.17.0.1"; }
+    assert_equals "10.0.0.2" "$(status_local_ip 10.0.0.1 10.0.0.2 10.0.0.3)" )
+
+  # ha_status_detect_stack: 用路径变量覆盖伪造存在性(不碰真实 /etc)
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/none-etcd"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/none-repman" MYSQL_HA_MYCNF="${tdir}/none-cnf"
+    : >"${tdir}/patroni.yml"
+    assert_equals "pg" "$(ha_status_detect_stack)" )
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/none1" PG_HA_ETCD_CONFIG_FILE="${tdir}/none2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/config.toml" MYSQL_HA_MYCNF="${tdir}/none-cnf"
+    assert_equals "mysql" "$(ha_status_detect_stack)" )  # config.toml 已在 Step1 建
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/none2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/config.toml" MYSQL_HA_MYCNF="${tdir}/none-cnf"
+    assert_equals "both" "$(ha_status_detect_stack)" )
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/none1" PG_HA_ETCD_CONFIG_FILE="${tdir}/none2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/none3" MYSQL_HA_MYCNF="${tdir}/none4"
+    assert_equals "none" "$(ha_status_detect_stack)" )
+
+  # status_recheck: 首次正常 -> 0
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export STATUS_RECHECK_DELAY=0
+    probe_ok() { return 0; }
+    local rc=0; status_recheck probe_ok || rc=$?
+    assert_equals "0" "$rc" )
+  # 首次异常、复采恢复 -> 10(瞬态)
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export STATUS_RECHECK_DELAY=0
+    STATE="${tdir}/probe.state"; : >"$STATE"
+    probe_flap() { if [[ -s "$STATE" ]]; then return 0; fi; echo x >"$STATE"; return 1; }
+    local rc=0; status_recheck probe_flap || rc=$?
+    assert_equals "10" "$rc" )
+  # 持续异常 -> 1
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    export STATUS_RECHECK_DELAY=0
+    probe_bad() { return 1; }
+    local rc=0; status_recheck probe_bad || rc=$?
+    assert_equals "1" "$rc" )
 }
 
 run_config_tests() {
@@ -390,11 +532,269 @@ run_orchestration_tests() {
   assert_contains "$action_log" "pg_ha_preflight_connectivity"
 }
 
+run_pg_status_tests() {
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+  load_pg_ha
+
+  # 拓扑解析:从 etcd.conf.yml 的 initial-cluster 还原节点 IP
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_ETCD_CONFIG_FILE="${tdir}/etcd.conf.yml"
+    printf 'initial-cluster: node1=http://10.0.0.1:2380,node2=http://10.0.0.2:2380,node3=http://10.0.0.3:2380\n' >"${PG_HA_ETCD_CONFIG_FILE}"
+    pg_ha_status_load_topology
+    assert_equals "10.0.0.1" "${PG_HA_NODE1_IP}"
+    assert_equals "10.0.0.2" "${PG_HA_NODE2_IP}"
+    assert_equals "10.0.0.3" "${PG_HA_NODE3_IP}" )
+
+  # 角色发现:有 patroni.yml + pg_is_in_recovery()=f -> primary
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    pg_ha_status_local_psql() { echo "f"; }
+    pg_ha_status_detect_role; assert_equals "primary" "${PG_HA_DETECTED_ROLE}" )
+  # =t -> replica
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    pg_ha_status_local_psql() { echo "t"; }
+    pg_ha_status_detect_role; assert_equals "replica" "${PG_HA_DETECTED_ROLE}" )
+  # 无 patroni.yml、有 etcd 配置 -> quorum
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/none.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/etcd.conf.yml"
+    pg_ha_status_detect_role; assert_equals "quorum" "${PG_HA_DETECTED_ROLE}" )
+
+  # 服务检查:active+enabled -> OK；failed -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    status_reset
+    systemctl() { case "$*" in *"is-active"*) return 0 ;; *"is-enabled"*) return 0 ;; *) echo "" ;; esac; }
+    pg_ha_status_service_one etcd
+    assert_equals "0" "${STATUS_CRIT_COUNT}"; assert_equals "0" "${STATUS_WARN_COUNT}" )
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    status_reset
+    systemctl() { return 1; }
+    pg_ha_status_service_one patroni
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  assert_function_exists pg_ha_status_identity
+  assert_function_exists pg_ha_status_services
+
+  # 拓扑:patronictl 输出含 Leader -> OK
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    PG_HA_DETECTED_ROLE=primary
+    command_exists() { [[ "$1" == patronictl ]] && return 0; return 0; }
+    patronictl() { printf '+ Cluster: pg-ha +\n| Member | Host | Role | State | TL | Lag |\n| node1 | 10.0.0.1 | Leader | running | 5 | |\n'; }
+    status_reset; pg_ha_status_topology
+    assert_equals "0" "${STATUS_CRIT_COUNT}" )
+  # 拓扑:无 Leader + 持续无 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml" STATUS_RECHECK_DELAY=0; : >"${PG_HA_PATRONI_YAML}"
+    PG_HA_DETECTED_ROLE=primary
+    command_exists() { return 0; }
+    patronictl() { printf '| node1 | 10.0.0.1 | Replica | running | 5 | 0 |\n'; }
+    status_reset; pg_ha_status_topology
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 复制:主库 standby 滞后超 failover 阈值 -> WARN(不具备候选资格)
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    pg_ha_status_local_psql() { echo "10.0.0.2 streaming async 5"; }   # 5MB > 1MB failover 阈值
+    status_reset; pg_ha_status_replication
+    assert_equals "1" "${STATUS_WARN_COUNT}"; assert_equals "0" "${STATUS_CRIT_COUNT}" )
+  # 复制:standby 非 streaming -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    pg_ha_status_local_psql() { echo "10.0.0.2 startup async ?"; }
+    status_reset; pg_ha_status_replication
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 静默退化:inactive 复制槽 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    PG_HA_DETECTED_ROLE=primary
+    command_exists() { return 1; }   # 跳过 patronictl 分支，只测复制槽
+    pg_ha_status_local_psql() { echo "dead_slot"; }
+    status_reset; pg_ha_status_degradation
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+
+  # 防脑裂:两节点 /primary 都 200 -> 多主 CRIT
+  # NODE3_IP 未设，etotal=2 不触发 etcd quorum 检查（<3），原断言不受影响
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2
+    curl() { case "$*" in *"/health"*) echo '{"health":"true"}' ;; *"/primary"*) echo 200 ;; esac; }
+    status_reset; pg_ha_status_splitbrain
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # etcd 容错:3 节点中 2 个 /health 健康，1 个不可达 -> etcd quorum WARN（ehealthy=2=equorum）
+  # /primary 全部 503 避免多主干扰；本机 /health 通过
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    # 本机 /health(127.0.0.1) + 10.0.0.1 + 10.0.0.2 -> true；10.0.0.3 -> 空(失败)
+    curl() {
+      case "$*" in
+        *"10.0.0.3"*"/health"*) return 1 ;;
+        *"/health"*)  echo '{"health":"true"}' ;;
+        *"/primary"*) echo 503 ;;
+      esac
+    }
+    status_reset; pg_ha_status_splitbrain
+    [[ "${STATUS_WARN_COUNT}" -ge 1 ]] || fail "expected etcd quorum WARN when only 2/3 members healthy" )
+
+  assert_function_exists pg_ha_status_ingress
+
+  # 磁盘:使用率超 CRIT 线 -> CRIT（quorum 节点，无 inactive 槽联动）
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=quorum
+    export PG_HA_ETCD_DATA="${tdir}"   # 存在的目录
+    df() { printf 'Filesystem 1K-blocks Used Avail Use%% Mounted\n/dev/x 100 95 5 95%% /\n'; }
+    pg_ha_status_local_psql() { echo "0"; }   # quorum 不走复制槽分支，但防止误调时产生额外计数
+    status_reset; pg_ha_status_disk
+    assert_equals "1" "${STATUS_CRIT_COUNT}"
+    assert_equals "0" "${STATUS_WARN_COUNT}" )
+
+  # 磁盘:primary + 磁盘使用率超 WARN + inactive 槽 > 0 -> 联动 CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_PGDATA="${tdir}" PG_HA_ETCD_DATA="${tdir}"
+    export STATUS_DISK_WARN_PCT=80 STATUS_DISK_CRIT_PCT=90
+    df() { printf 'Filesystem 1K-blocks Used Avail Use%% Mounted\n/dev/x 100 85 15 85%% /\n'; }
+    pg_ha_status_local_psql() { echo "2"; }   # 2 个 inactive 槽
+    status_reset; pg_ha_status_disk
+    # 85% >= WARN -> 磁盘 WARN(2 个分区所以2次) + 联动 CRIT 1
+    assert_equals "1" "${STATUS_CRIT_COUNT}"
+    [[ "${STATUS_WARN_COUNT}" -ge 1 ]] || fail "expected at least 1 WARN for disk usage" )
+
+  # 磁盘:primary + 磁盘使用率低于 WARN + inactive 槽 > 0 -> disk 不报 WARN/CRIT（由 degradation 负责）
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_PGDATA="${tdir}" PG_HA_ETCD_DATA="${tdir}"
+    export STATUS_DISK_WARN_PCT=80 STATUS_DISK_CRIT_PCT=90
+    df() { printf 'Filesystem 1K-blocks Used Avail Use%% Mounted\n/dev/x 100 60 40 60%% /\n'; }
+    pg_ha_status_local_psql() { echo "3"; }   # 3 个 inactive 槽，但磁盘正常
+    status_reset; pg_ha_status_disk
+    assert_equals "0" "${STATUS_CRIT_COUNT}"
+    assert_equals "0" "${STATUS_WARN_COUNT}" )
+
+  # 连接数:超 WARN 线 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    pg_ha_status_local_psql() { case "$1" in *count*) echo 85 ;; *max_connections*) echo 100 ;; esac; }
+    status_reset; pg_ha_status_load
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+
+  # 编排:注入 CRIT -> 退出码 2
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/common.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    pg_ha_status_load_topology() { :; }
+    pg_ha_status_detect_role() { PG_HA_DETECTED_ROLE=primary; }
+    pg_ha_status_identity() { :; }; pg_ha_status_services() { :; }; pg_ha_status_topology() { :; }
+    pg_ha_status_replication() { :; }; pg_ha_status_degradation() { :; }; pg_ha_status_ingress() { :; }
+    pg_ha_status_splitbrain() { status_crit "injected"; }
+    pg_ha_status_disk() { :; }; pg_ha_status_clock() { :; }; pg_ha_status_logs() { :; }
+    pg_ha_status_config_audit() { :; }; pg_ha_status_load() { :; }
+    local rc=0; pg_ha_status_main >/dev/null || rc=$?
+    assert_equals "2" "$rc" )
+
+  assert_function_exists pg_ha_status_clock
+  assert_function_exists pg_ha_status_logs
+  assert_function_exists pg_ha_status_config_audit
+}
+
+run_status_skeleton_tests() {
+  local entry="${ROOT_DIR}/status-pg-ha.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected status-pg-ha.sh to be executable"
+  bash -n "$entry" || fail "status-pg-ha.sh has syntax errors"
+  # 远程下载列表必须含新模块
+  assert_contains "$entry" "lib/common.sh"
+  assert_contains "$entry" "lib/status-common.sh"
+  assert_contains "$entry" "lib/pg-ha/status.sh"
+  assert_contains "$entry" "pg_ha_status_main"
+  assert_contains "$entry" "require_root"
+  # status 模块语法
+  bash -n "${ROOT_DIR}/lib/status-common.sh" || fail "status-common.sh syntax error"
+  bash -n "${ROOT_DIR}/lib/pg-ha/status.sh" || fail "pg-ha/status.sh syntax error"
+}
+
+run_ha_status_entry_tests() {
+  local entry="${ROOT_DIR}/ha-status.sh"
+  assert_file_exists "$entry"
+  [[ -x "$entry" ]] || fail "expected ha-status.sh to be executable"
+  bash -n "$entry" || fail "ha-status.sh has syntax errors"
+  assert_contains "$entry" "ha_status_detect_stack"
+  assert_contains "$entry" "ha_status_dispatch"
+  assert_contains "$entry" "lib/pg-ha/status.sh"
+  assert_contains "$entry" "lib/mysql-ha/status.sh"
+  assert_contains "$entry" "require_root"
+
+  local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+  # none -> 退出码 3
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/ha-status.sh"
+    load_linuxshell_modules() { :; }
+    pg_ha_status_main() { return 0; }; mysql_ha_status_main() { return 0; }
+    export PG_HA_PATRONI_YAML="${tdir}/n1" PG_HA_ETCD_CONFIG_FILE="${tdir}/n2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/n3" MYSQL_HA_MYCNF="${tdir}/n4"
+    local rc=0; ha_status_dispatch || rc=$?; assert_equals "3" "$rc" )
+  # both -> 退出码 4
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/ha-status.sh"
+    load_linuxshell_modules() { :; }
+    pg_ha_status_main() { return 0; }; mysql_ha_status_main() { return 0; }
+    : >"${tdir}/p.yml"; : >"${tdir}/c.toml"
+    export PG_HA_PATRONI_YAML="${tdir}/p.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/n2"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/c.toml" MYSQL_HA_MYCNF="${tdir}/n4"
+    local rc=0; ha_status_dispatch || rc=$?; assert_equals "4" "$rc" )
+  # 显式 pg -> 调 pg_ha_status_main
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/ha-status.sh"
+    load_linuxshell_modules() { :; }
+    pg_ha_status_main() { echo PGMAIN; return 0; }
+    local out; out="$(ha_status_dispatch pg)"; assert_equals "PGMAIN" "$out" )
+}
+
+run_status_readonly_tests() {
+  local f files="${ROOT_DIR}/lib/status-common.sh ${ROOT_DIR}/lib/pg-ha/status.sh ${ROOT_DIR}/status-pg-ha.sh ${ROOT_DIR}/ha-status.sh"
+  _no() { if grep -nE "$2" "$1" >/dev/null 2>&1; then grep -nE "$2" "$1" >&2; fail "$3 in $1"; fi; }
+  for f in $files; do
+    [[ -e "$f" ]] || continue
+    _no "$f" 'systemctl[[:space:]]+(start|stop|restart|reload|enable|disable|mask|kill)' "service-control write"
+    _no "$f" 'patronictl[^|]*(switchover|failover|edit-config|remove|reinit|restart|reload|pause|resume)' "patronictl write subcommand"
+    _no "$f" 'etcdctl[^|]*(put|del|txn|user |role |auth |move-leader|snapshot|defrag)' "etcdctl write subcommand"
+    _no "$f" '(INSERT |UPDATE |DELETE |DROP |ALTER |CREATE |GRANT |REVOKE |TRUNCATE |SET +GLOBAL|FLUSH |RESET |STOP +REPLICA|START +REPLICA|CHANGE +REPLICATION|pg_promote|pg_terminate_backend)' "SQL write"
+    _no "$f" 'curl[^|]*(-X +(POST|PUT|DELETE|PATCH)|--request)' "HTTP write"
+    _no "$f" 'curl[^|]*(-u |--user )' "plaintext curl credential"
+    _no "$f" 'mysql[^|]*[[:space:]]-p[^[:space:]]' "plaintext mysql password"
+    _no "$f" 'etcdctl[^|]*--user=' "plaintext etcdctl credential"
+    _no "$f" '>[[:space:]]*/(etc|data|var|usr|run)/' "write to system path"
+  done
+  assert_contains "${ROOT_DIR}/lib/status-common.sh" "curl -K"
+}
+
 run_docs_tests() {
   local readme="${ROOT_DIR}/README.md"
   assert_contains "$readme" "install-pg-ha.sh"
   assert_contains "$readme" "Patroni"
   assert_contains "$readme" "PG_HA_NODE1_IP"
+  assert_contains "$readme" "ha-status.sh"
+  assert_contains "$readme" "status-pg-ha.sh"
+  assert_contains "$readme" "HA 状态巡检"
 }
 
 run_skeleton_tests() {
@@ -424,16 +824,21 @@ run_skeleton_tests() {
 main() {
   local suite="${1:-all}"
   case "$suite" in
+    status_common) run_status_common_tests ;;
     config) run_config_tests ;;
     skeleton) run_skeleton_tests ;;
+    status_skeleton) run_status_skeleton_tests ;;
+    ha_entry) run_ha_status_entry_tests ;;
+    status_readonly) run_status_readonly_tests ;;
     common) run_common_tests ;;
     precheck) run_precheck_tests ;;
     etcd) run_etcd_tests ;;
     patroni) run_patroni_tests ;;
     haproxy) run_haproxy_tests ;;
     orchestration) run_orchestration_tests ;;
+    pg_status) run_pg_status_tests ;;
     docs) run_docs_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
+    all) run_status_common_tests; run_skeleton_tests; run_status_skeleton_tests; run_ha_status_entry_tests; run_status_readonly_tests; run_config_tests; run_pg_status_tests; run_common_tests; run_precheck_tests; run_etcd_tests; run_patroni_tests; run_haproxy_tests; run_orchestration_tests; run_docs_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

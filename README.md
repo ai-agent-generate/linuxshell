@@ -140,6 +140,28 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell
 - MySQL 管理员密码取自 `DB_TENANT_MYSQL_ADMIN_PASSWORD`，缺省回退 `MYSQL_HA_ROOT_PASSWORD` /
   `MYSQL_ROOT_PASSWORD`，再缺则交互输入。
 
+## HA 状态巡检(只读)
+
+部署完成后，在任一 HA 节点运行只读巡检脚本，快速看清**本机角色、服务、集群拓扑、复制健康与隐患**。纯只读，不改系统、不回显密码，可在生产随时运行。需以 `root` 运行(读取 600 配置以提取查询凭据)。
+
+```bash
+# 自动探测本机是 PG 还是 MySQL HA 并巡检：
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/ha-status.sh)
+
+# 或指定/直接调用单栈入口：
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/ha-status.sh) pg
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/status-pg-ha.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/ai-agent-generate/linuxshell/main/status-mysql-ha.sh)
+```
+
+**退出码**：`0`=OK，`1`=WARNING，`2`=CRITICAL，`3`=未检测到 HA 部署，`4`=前置错误(非 root 等)。便于接入 cron 告警。
+
+**检查范围**：本机角色识别(主/从/仲裁，从运行态自动发现)、systemd 服务与端口、集群拓扑(patronictl / Replication Manager)、复制延迟与中断、入口一致性(故障切换瞬态二次复采)、防脑裂(以 etcd / repman 仲裁为准)、静默退化(复制槽堆积 / 半同步退化 / Patroni 维护模式 / etcd 仅剩 2 节点 / 僵尸主)、磁盘容量、时钟同步、关键日志摘要、配置与连通性自检、连接数。
+
+**可覆盖阈值**(环境变量)：`STATUS_DISK_WARN_PCT`/`STATUS_DISK_CRIT_PCT`(默认 80/90)、`STATUS_MYSQL_LAG_WARN_SEC`/`STATUS_MYSQL_LAG_CRIT_SEC`(30/300)、`STATUS_PG_LAG_CRIT_MB`(512)、`STATUS_CONN_WARN_PCT`/`STATUS_CONN_CRIT_PCT`(80/95)、`STATUS_LOG_LINES`(20)、`STATUS_RECHECK_DELAY`(3)。
+
+> 巡检为**单机视角**：跨节点检查依赖端口放行；网络分区下被隔离节点看不到对侧，防脑裂为尽力而为(报告会标注跨节点覆盖度 N/M)。
+
 ## 快捷使用 psql
 
 部署 PostgreSQL 时会自动安装 `pg` 命令（`/usr/local/bin/pg`），等价于 `docker exec -it postgres psql -U <user>`：
