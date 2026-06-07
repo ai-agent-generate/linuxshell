@@ -195,6 +195,44 @@ run_pg_sql_tests() {
   assert_str_contains "$sql" "rolconnlimit"
 }
 
+run_mysql_sql_tests() {
+  load_db_tenant
+  assert_function_exists mysql_build_create_tenant_sql
+  assert_function_exists mysql_build_set_limit_sql
+  assert_function_exists mysql_build_set_password_sql
+  assert_function_exists mysql_build_drop_sql
+  assert_function_exists mysql_build_list_sql
+
+  local sql
+  # 新建:user 不存在 -> CREATE USER ... WITH
+  sql="$(mysql_build_create_tenant_sql acme '%' acme PWD 20 0 0 0 0)"
+  assert_str_contains "$sql" "CREATE DATABASE IF NOT EXISTS \`acme\` CHARACTER SET utf8mb4;"
+  assert_str_contains "$sql" "CREATE USER 'acme'@'%' IDENTIFIED BY 'PWD' WITH MAX_USER_CONNECTIONS 20 MAX_CONNECTIONS_PER_HOUR 0 MAX_QUERIES_PER_HOUR 0 MAX_UPDATES_PER_HOUR 0;"
+  assert_str_contains "$sql" "GRANT ALL PRIVILEGES ON \`acme\`.* TO 'acme'@'%';"
+  # 已存在:user 存在 -> 限额走 ALTER USER(不被 CREATE USER IF NOT EXISTS 吞掉)
+  sql="$(mysql_build_create_tenant_sql acme '%' acme PWD 20 0 0 0 1)"
+  assert_str_contains "$sql" "ALTER USER 'acme'@'%' WITH MAX_USER_CONNECTIONS 20"
+  assert_str_missing "$sql" "CREATE USER 'acme'@'%'"
+
+  sql="$(mysql_build_set_limit_sql acme '10.0.0.%' 30 100 1000 500)"
+  assert_str_contains "$sql" "ALTER USER 'acme'@'10.0.0.%' WITH MAX_USER_CONNECTIONS 30 MAX_CONNECTIONS_PER_HOUR 100 MAX_QUERIES_PER_HOUR 1000 MAX_UPDATES_PER_HOUR 500;"
+
+  sql="$(mysql_build_set_password_sql acme '%' NEWPW)"
+  assert_str_contains "$sql" "ALTER USER 'acme'@'%' IDENTIFIED BY 'NEWPW';"
+
+  sql="$(mysql_build_drop_sql acme '%' acme 1 1)"
+  assert_str_contains "$sql" "DROP DATABASE IF EXISTS \`acme\`;"
+  assert_str_contains "$sql" "DROP USER IF EXISTS 'acme'@'%';"
+  # 仅 user 存在(库已不在)
+  sql="$(mysql_build_drop_sql acme '%' acme 0 1)"
+  assert_str_missing "$sql" "DROP DATABASE"
+  assert_str_contains "$sql" "DROP USER IF EXISTS 'acme'@'%';"
+
+  sql="$(mysql_build_list_sql)"
+  assert_str_contains "$sql" "FROM mysql.user"
+  assert_str_contains "$sql" "max_user_connections"
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -203,7 +241,8 @@ main() {
     common) run_common_tests ;;
     backup_helper) run_backup_helper_tests ;;
     pg_sql) run_pg_sql_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests ;;
+    mysql_sql) run_mysql_sql_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
