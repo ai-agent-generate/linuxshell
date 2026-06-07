@@ -580,6 +580,61 @@ run_pg_status_tests() {
 
   assert_function_exists pg_ha_status_identity
   assert_function_exists pg_ha_status_services
+
+  # 拓扑:patronictl 输出含 Leader -> OK
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    PG_HA_DETECTED_ROLE=primary
+    command_exists() { [[ "$1" == patronictl ]] && return 0; return 0; }
+    patronictl() { printf '+ Cluster: pg-ha +\n| Member | Host | Role | State | TL | Lag |\n| node1 | 10.0.0.1 | Leader | running | 5 | |\n'; }
+    status_reset; pg_ha_status_topology
+    assert_equals "0" "${STATUS_CRIT_COUNT}" )
+  # 拓扑:无 Leader + 持续无 -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml" STATUS_RECHECK_DELAY=0; : >"${PG_HA_PATRONI_YAML}"
+    PG_HA_DETECTED_ROLE=primary
+    command_exists() { return 0; }
+    patronictl() { printf '| node1 | 10.0.0.1 | Replica | running | 5 | 0 |\n'; }
+    status_reset; pg_ha_status_topology
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 复制:主库 standby 滞后超 failover 阈值 -> WARN(不具备候选资格)
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    pg_ha_status_local_psql() { echo "10.0.0.2 streaming async 5"; }   # 5MB > 1MB failover 阈值
+    status_reset; pg_ha_status_replication
+    assert_equals "1" "${STATUS_WARN_COUNT}"; assert_equals "0" "${STATUS_CRIT_COUNT}" )
+  # 复制:standby 非 streaming -> CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    pg_ha_status_local_psql() { echo "10.0.0.2 startup async ?"; }
+    status_reset; pg_ha_status_replication
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  # 静默退化:inactive 复制槽 -> WARN
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    PG_HA_DETECTED_ROLE=primary
+    command_exists() { return 1; }   # 跳过 patronictl 分支，只测复制槽
+    pg_ha_status_local_psql() { echo "dead_slot"; }
+    status_reset; pg_ha_status_degradation
+    assert_equals "1" "${STATUS_WARN_COUNT}" )
+
+  # 防脑裂:两节点 /primary 都 200 -> 多主 CRIT
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2
+    curl() { case "$*" in *"/health"*) echo '{"health":"true"}' ;; *"/primary"*) echo 200 ;; esac; }
+    status_reset; pg_ha_status_splitbrain
+    assert_equals "1" "${STATUS_CRIT_COUNT}" )
+
+  assert_function_exists pg_ha_status_ingress
 }
 
 run_docs_tests() {
