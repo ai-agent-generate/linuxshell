@@ -448,6 +448,44 @@ run_mysql_safety_tests() {
     assert_str_missing "$out" "已删除" )
 }
 
+run_action_tests() {
+  load_db_tenant
+  for fn in pg_create_tenant pg_list_tenants pg_set_limit pg_set_password \
+            mysql_create_tenant mysql_list_tenants mysql_set_limit mysql_set_password; do
+    assert_function_exists "$fn"
+  done
+
+  local tmp; tmp="$(mktemp -d)"; trap "rm -rf '$tmp'" RETURN
+  local log="${tmp}/exec.log"
+
+  # PG create:角色/库已存在 -> 用现值回填(不被默认覆盖) -> 生成 ALTER 分支且连接限额取现值 50
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    : >"$log"
+    pg_assert_writable() { return 0; }
+    pg_role_exists() { echo 1; }
+    pg_db_exists() { echo 1; }
+    pg_query() { echo "50"; }
+    pg_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "${2:-}"; }
+    prompt_yes_no() { return 0; }
+    pg_create_tenant acme
+    assert_contains "$log" "ALTER ROLE \"acme\" CONNECTION LIMIT 50;" )
+
+  # MySQL create:新用户 -> CREATE USER ... WITH 限额;host 取默认 %
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/mysql.sh"
+    : >"$log"
+    mysql_assert_writable() { return 0; }
+    mysql_user_exists() { echo 0; }
+    mysql_db_exists() { echo 0; }
+    mysql_query() { echo ""; }
+    mysql_exec_sql() { cat >>"$log"; }
+    prompt_with_default() { echo "${2:-}"; }
+    mysql_create_tenant acme
+    assert_contains "$log" "CREATE USER 'acme'@'%' IDENTIFIED BY" )
+}
+
 main() {
   local suite="${1:-all}"
   case "$suite" in
@@ -459,7 +497,8 @@ main() {
     mysql_sql) run_mysql_sql_tests ;;
     pg_safety) run_pg_safety_tests ;;
     mysql_safety) run_mysql_safety_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests; run_mysql_safety_tests ;;
+    action) run_action_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_common_tests; run_backup_helper_tests; run_pg_sql_tests; run_mysql_sql_tests; run_pg_safety_tests; run_mysql_safety_tests; run_action_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"

@@ -181,3 +181,73 @@ mysql_drop_tenant() {
     return 1
   fi
 }
+
+mysql_current_user_muc() {
+  local v; v="$(mysql_query "SELECT max_user_connections FROM mysql.user WHERE user='${1}' AND host='${2}';")"
+  [[ -n "$v" ]] && echo "$v" || echo "${DB_TENANT_MYSQL_MAX_USER_CONN}"
+}
+
+mysql_create_tenant() {
+  local user="${1:-}"
+  if [[ -z "$user" ]]; then user="$(prompt_with_default "租户名(=用户名)" "")"; fi
+  db_tenant_validate_identifier "$user" 32 || return 1
+  local db; db="$(prompt_with_default "数据库名" "$user")"; db_tenant_validate_identifier "$db" || return 1
+  local host; host="$(prompt_with_default "允许来源 host" "${DB_TENANT_MYSQL_DEFAULT_HOST}")"
+  db_tenant_validate_host "$host" || return 1
+  mysql_assert_writable || return 1
+
+  local uexist; uexist="$(mysql_user_exists "$user" "$host")"
+  local def_muc="${DB_TENANT_MYSQL_MAX_USER_CONN}"
+  if [[ "$uexist" == "1" ]]; then def_muc="$(mysql_current_user_muc "$user" "$host")"; echo "该账号已存在,现值回填(回车保持不变)。"; fi
+  local muc mcph mqph muph pw escpw
+  muc="$(prompt_with_default "并发连接上限" "$def_muc")"
+  mcph="$(prompt_with_default "每小时新建连接(0=不限)" "${DB_TENANT_MYSQL_MAX_CONN_PER_HOUR}")"
+  mqph="$(prompt_with_default "每小时查询数(0=不限)" "${DB_TENANT_MYSQL_MAX_QUERIES_PER_HOUR}")"
+  muph="$(prompt_with_default "每小时更新数(0=不限)" "${DB_TENANT_MYSQL_MAX_UPDATES_PER_HOUR}")"
+  if [[ "$uexist" == "1" ]]; then pw=""; escpw=""; else pw="$(db_tenant_generate_password)"; escpw="$(db_tenant_sql_escape_literal mysql "$pw")"; fi
+
+  if mysql_build_create_tenant_sql "$user" "$host" "$db" "$escpw" "$muc" "$mcph" "$mqph" "$muph" "$uexist" | mysql_exec_sql; then
+    echo "== 租户就绪(MySQL) =="
+    echo "库: $db  账号: '$user'@'$host'"
+    [[ -n "$pw" ]] && echo "密码(仅显示一次): $pw"
+    echo "连接示例: mysql -h <host> -u $user -p $db"
+  else
+    echo "创建失败,请检查上面的错误。" >&2
+    return 1
+  fi
+}
+
+mysql_list_tenants() {
+  local notin="" u
+  for u in ${DB_TENANT_MYSQL_SYSTEM_USERS}; do notin="${notin:+$notin,}'${u}'"; done
+  printf "SELECT user, host, max_user_connections, max_connections, max_questions, max_updates FROM mysql.user WHERE user NOT IN (%s) ORDER BY user, host;\n" "$notin" | mysql_exec_sql
+}
+
+mysql_set_limit() {
+  local user; user="$(prompt_with_default "租户名(用户)" "")"; db_tenant_validate_identifier "$user" 32 || return 1
+  local host; host="$(prompt_with_default "host" "${DB_TENANT_MYSQL_DEFAULT_HOST}")"; db_tenant_validate_host "$host" || return 1
+  mysql_assert_writable || return 1
+  local cur; cur="$(mysql_current_user_muc "$user" "$host")"
+  local muc mcph mqph muph
+  muc="$(prompt_with_default "并发连接上限" "$cur")"
+  mcph="$(prompt_with_default "每小时新建连接" "${DB_TENANT_MYSQL_MAX_CONN_PER_HOUR}")"
+  mqph="$(prompt_with_default "每小时查询数" "${DB_TENANT_MYSQL_MAX_QUERIES_PER_HOUR}")"
+  muph="$(prompt_with_default "每小时更新数" "${DB_TENANT_MYSQL_MAX_UPDATES_PER_HOUR}")"
+  if mysql_build_set_limit_sql "$user" "$host" "$muc" "$mcph" "$mqph" "$muph" | mysql_exec_sql; then
+    echo "已更新限额: '$user'@'$host'"
+  else
+    echo "更新限额失败。" >&2; return 1
+  fi
+}
+
+mysql_set_password() {
+  local user; user="$(prompt_with_default "租户名(用户)" "")"; db_tenant_validate_identifier "$user" 32 || return 1
+  local host; host="$(prompt_with_default "host" "${DB_TENANT_MYSQL_DEFAULT_HOST}")"; db_tenant_validate_host "$host" || return 1
+  mysql_assert_writable || return 1
+  local pw escpw; pw="$(db_tenant_generate_password)"; escpw="$(db_tenant_sql_escape_literal mysql "$pw")"
+  if mysql_build_set_password_sql "$user" "$host" "$escpw" | mysql_exec_sql; then
+    echo "新密码(仅显示一次): $pw"
+  else
+    echo "改密码失败。" >&2; return 1
+  fi
+}

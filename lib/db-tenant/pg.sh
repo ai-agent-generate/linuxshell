@@ -172,3 +172,79 @@ pg_drop_tenant() {
     return 1
   fi
 }
+
+# 读现有角色连接上限(不存在回显默认)
+pg_current_role_conn() {
+  local v; v="$(pg_query postgres "SELECT rolconnlimit FROM pg_roles WHERE rolname='${1}';")"
+  [[ -n "$v" && "$v" != "-1" ]] && echo "$v" || echo "${DB_TENANT_PG_CONN_LIMIT}"
+}
+
+pg_create_tenant() {
+  local role="${1:-}"
+  if [[ -z "$role" ]]; then role="$(prompt_with_default "租户名(=角色名)" "")"; fi
+  db_tenant_validate_identifier "$role" || return 1
+  local db; db="$(prompt_with_default "数据库名" "$role")"
+  db_tenant_validate_identifier "$db" || return 1
+  pg_assert_writable || return 1
+
+  local rexist dexist; rexist="$(pg_role_exists "$role")"; dexist="$(pg_db_exists "$db")"
+  local def_conn="${DB_TENANT_PG_CONN_LIMIT}"
+  if [[ "$rexist" == "1" ]]; then
+    def_conn="$(pg_current_role_conn "$role")"
+    echo "该租户/角色已存在,以下为现值回填(回车保持不变)。"
+  fi
+  local rconn dconn stmt idle wmem pw escpw
+  rconn="$(prompt_with_default "角色并发连接上限" "$def_conn")"
+  dconn="$(prompt_with_default "库级并发连接上限" "${DB_TENANT_PG_DB_CONN_LIMIT}")"
+  stmt="$(prompt_with_default "单语句超时" "${DB_TENANT_PG_STATEMENT_TIMEOUT}")"
+  idle="$(prompt_with_default "空闲事务超时" "${DB_TENANT_PG_IDLE_TX_TIMEOUT}")"
+  wmem="$(prompt_with_default "单会话排序内存" "${DB_TENANT_PG_WORK_MEM}")"
+  if [[ "$rexist" == "1" ]]; then
+    pw=""; escpw=""
+  else
+    pw="$(db_tenant_generate_password)"; escpw="$(db_tenant_sql_escape_literal pg "$pw")"
+  fi
+  local db_new=0; [[ "$dexist" == "0" ]] && db_new=1
+
+  if pg_build_create_tenant_sql "$role" "$db" "$escpw" "$rconn" "$dconn" "$stmt" "$idle" "$wmem" \
+       "$rexist" "$dexist" "$db_new" | pg_exec_sql postgres; then
+    echo "== 租户就绪(PostgreSQL) =="
+    echo "库: $db  角色: $role"
+    [[ -n "$pw" ]] && echo "密码(仅显示一次): $pw"
+    echo "连接示例: psql -h <host> -U $role -d $db"
+  else
+    echo "创建失败,请检查上面的错误。" >&2
+    return 1
+  fi
+}
+
+pg_list_tenants() { pg_build_list_sql | pg_exec_sql postgres; }
+
+pg_set_limit() {
+  local role; role="$(prompt_with_default "租户名(角色)" "")"; db_tenant_validate_identifier "$role" || return 1
+  local db; db="$(prompt_with_default "数据库名" "$role")"; db_tenant_validate_identifier "$db" || return 1
+  pg_assert_writable || return 1
+  local cur; cur="$(pg_current_role_conn "$role")"
+  local rconn dconn stmt idle wmem
+  rconn="$(prompt_with_default "角色并发连接上限" "$cur")"
+  dconn="$(prompt_with_default "库级并发连接上限" "${DB_TENANT_PG_DB_CONN_LIMIT}")"
+  stmt="$(prompt_with_default "单语句超时" "${DB_TENANT_PG_STATEMENT_TIMEOUT}")"
+  idle="$(prompt_with_default "空闲事务超时" "${DB_TENANT_PG_IDLE_TX_TIMEOUT}")"
+  wmem="$(prompt_with_default "单会话排序内存" "${DB_TENANT_PG_WORK_MEM}")"
+  if pg_build_set_limit_sql "$role" "$db" "$rconn" "$dconn" "$stmt" "$idle" "$wmem" | pg_exec_sql postgres; then
+    echo "已更新限额: $role"
+  else
+    echo "更新限额失败。" >&2; return 1
+  fi
+}
+
+pg_set_password() {
+  local role; role="$(prompt_with_default "租户名(角色)" "")"; db_tenant_validate_identifier "$role" || return 1
+  pg_assert_writable || return 1
+  local pw escpw; pw="$(db_tenant_generate_password)"; escpw="$(db_tenant_sql_escape_literal pg "$pw")"
+  if pg_build_set_password_sql "$role" "$escpw" | pg_exec_sql postgres; then
+    echo "新密码(仅显示一次): $pw"
+  else
+    echo "改密码失败。" >&2; return 1
+  fi
+}
