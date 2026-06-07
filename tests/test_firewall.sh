@@ -149,6 +149,23 @@ run_swap_tests() {
   assert_contains "$log" "-E FW-INPUT-NEW FW-INPUT"
 }
 
+run_apply_tests() {
+  local temp_root; temp_root="$(mktemp -d)"; trap "rm -rf '$temp_root'" RETURN
+  local log="${temp_root}/ipt.log"
+  export FW_RULES_DIR="${temp_root}/etc" FW_RULES_FILE="${temp_root}/etc/rules.conf"
+  export FW_SSH_PORT=22
+  load_firewall
+  iptables() { echo "iptables $*" >>"$log"; case "$1" in -nL|-C) return 1 ;; esac; return 0; }
+  command_exists() { case "$1" in sshd) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  fw_rules_add "host allow tcp 8080 10.0.0.0/24 app"
+  : >"$log"
+  ( unset SSH_CONNECTION; fw_build_input iptables FW-INPUT )
+  assert_order "$log" "-i lo -j ACCEPT" "ESTABLISHED,RELATED"
+  assert_order "$log" "ESTABLISHED,RELATED" "fw-managed:ssh-guard"
+  assert_order "$log" "fw-managed:ssh-guard" "fw-managed:host"
+  assert_contains "$log" "--dports 8080"
+}
+
 run_lockout_tests() {
   load_firewall
   ( export SSH_CONNECTION="1.2.3.4 51000 5.6.7.8 22022"
@@ -175,7 +192,8 @@ main() {
     rulesfile) run_rulesfile_tests ;;
     swap) run_swap_tests ;;
     lockout) run_lockout_tests ;;
-    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests ;;
+    apply) run_apply_tests ;;
+    all) run_skeleton_tests; run_config_tests; run_validate_tests; run_rulesfile_tests; run_swap_tests; run_lockout_tests; run_apply_tests ;;
     *) fail "unknown suite: $suite" ;;
   esac
   echo "PASS: ${suite}"
