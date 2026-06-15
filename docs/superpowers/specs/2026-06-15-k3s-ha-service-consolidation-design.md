@@ -123,19 +123,48 @@ k3s 暴露入口
 
 第三台机器的 IP、主机名和磁盘路径不在设计中硬编码。上线后作为部署参数录入，并纳入 k3s 节点、Longhorn 存储节点、数据库数据节点和防火墙白名单。
 
+## 入口与连接契约
+
+v1 固定以下入口契约，避免实施时在 NodePort、ServiceLB、hostNetwork 或独立代理之间摇摆。
+
+### Caddy 到 k3s
+
+- 现有 Caddy 继续终止公网 TLS。
+- k3s 使用 Traefik Ingress 作为集群入口。
+- Traefik 暴露为固定 NodePort：`30080` 用于 HTTP 后端流量；`30443` 预留给需要 Caddy 到后端 TLS 的服务，v1 默认不用。
+- Caddy upstream 指向两台工作/数据节点的 `http://<worker-ip>:30080`，保留原始 `Host` 头，由 Traefik Ingress 按域名路由到对应 Service。
+- Caddy 不把流量发到控制节点的 NodePort；防火墙只允许 Caddy 前端服务器访问工作节点 `30080`。
+- 每个服务在 k3s 内必须有 readiness probe。Traefik 只把流量转给 ready pod，Caddy upstream 只负责节点级后端可达性。
+
+这意味着前端切流的基本单元是 Caddy upstream：旧 VPS upstream 与新 k3s worker NodePort upstream 可以并存，按服务逐步切换。
+
+### k3s 应用到数据库
+
+仓库现有数据库 HA 设计要求应用配置两台 HAProxy 地址并具备连接失败重试。为避免每个 Go 服务都实现多地址数据库连接，v1 在 k3s 内增加一个轻量 TCP 路由层：
+
+- `postgres-ha` ClusterIP Service：由 2 个 in-cluster HAProxy pod 承载，backend 指向两台数据节点的 `:5000`。
+- `mysql-ha` ClusterIP Service：由 2 个 in-cluster HAProxy pod 承载，backend 指向两台数据节点的 `:6446`。
+- in-cluster HAProxy 做 TCP 健康检查与连接重试；后端地址固定为两台数据节点的 HAProxy。
+- k3s 内应用连接 `postgres-ha.<namespace>:5432` 和 `mysql-ha.<namespace>:3306`。
+- k3s 外应用若直接接数据库 HA，仍必须配置两台数据节点 HAProxy 地址并启用重试，不能只写单个节点地址。
+
+该契约对齐现有仓库 README 的“双 HAProxy 地址 + 重试”要求，同时给 k3s 内服务提供稳定单一服务名。
+
 ## 节点职责
 
 ### 控制/仲裁节点
 
 `control-01` 资源较小，不承载主要 Web 流量和数据库数据目录。它承担低负载但关键的控制职责：
 
-- k3s server/API。
+- k3s server/API。v1 使用单 server + embedded SQLite，接受控制面单点。
 - PostgreSQL HA 的 etcd 第三仲裁成员。
 - MySQL HA 的 Replication Manager 仲裁/监控节点。
 - 备份任务调度、巡检脚本、轻量监控入口。
 - 运维工具与集群状态查看。
 
-控制节点故障时，已有 Web pod 在工作节点上继续运行。数据库自动故障切换能力会因失去第三仲裁而降级，需尽快恢复控制节点。
+控制节点故障时，已有 Web pod 在工作节点上继续运行，kubelet 会维持已存在的 pod 和容器状态；但 k3s API 不可用，不能做新发布、扩缩容、节点加入、配置变更，也不能在工作节点故障后调度替代 pod。数据库自动故障切换能力会因失去第三仲裁而降级，需尽快恢复控制节点。
+
+k3s manifests 以仓库/配置目录为真源；单 server 的 SQLite datastore 也要做周期性备份。控制节点丢失时，恢复路径是重建 k3s server、恢复 datastore 或重新应用 manifests，再让工作节点重新加入。
 
 ### 工作/数据节点
 
@@ -155,7 +184,7 @@ k3s 暴露入口
 
 - `Deployment`：声明镜像、环境变量、启动参数、探针、资源限制。
 - `Service`：提供集群内稳定访问名。
-- `Ingress` 或 k3s 入口服务：接收来自现有 Caddy 的流量。
+- `Ingress`：由 Traefik 接收来自现有 Caddy 的流量，Caddy upstream 指向两台工作节点固定 NodePort。
 - `Secret`：保存数据库、Redis、RabbitMQ 等连接凭据。
 - `ConfigMap`：保存非敏感配置。
 - `PersistentVolumeClaim`：仅在服务确实需要共享文件目录时使用 Longhorn PVC。
@@ -209,11 +238,12 @@ PostgreSQL 继续使用仓库现有非 Docker HA 方向：
 
 - 两台工作/数据节点运行 PostgreSQL 18 + Patroni。
 - 控制/仲裁节点运行 etcd 第三成员。
-- 两台数据节点运行 HAProxy，应用连接 `:5000`。
+- 两台数据节点运行 HAProxy，节点级入口是 `node-a:5000` 与 `node-b:5000`。
+- k3s 内应用连接 in-cluster `postgres-ha` Service；k3s 外应用必须配置两台节点级 HAProxy 地址并具备重试。
 - HAProxy 健康检查只把流量转发到当前 primary。
 - 默认按自动恢复优先设计，接受极小 RPO；强一致场景可单独启用同步复制配置。
 
-应用侧不要直接连接 `:5432` 数据库端口，应连接 HAProxy 入口，并具备连接失败重试能力。
+应用侧不要直接连接 `:5432` 数据库端口。k3s 内通过 `postgres-ha` ClusterIP 进入；k3s 外通过两台数据节点 HAProxy 地址进入。
 
 ### MySQL
 
@@ -221,20 +251,25 @@ MySQL 继续使用仓库现有非 Docker HA 方向：
 
 - 两台工作/数据节点运行 MySQL 8.4 主从。
 - 控制/仲裁节点运行 Replication Manager 监控/仲裁。
-- 两台数据节点运行 HAProxy，应用连接 `:6446`。
+- 两台数据节点运行 HAProxy，节点级入口是 `node-a:6446` 与 `node-b:6446`。
+- k3s 内应用连接 in-cluster `mysql-ha` Service；k3s 外应用必须配置两台节点级 HAProxy 地址并具备重试。
 - HAProxy 通过 `mysqlchk` 只放行当前可写主库。
 - 默认按自动恢复优先设计，接受极小 RPO。
 
-应用侧不要直接连接 `:3306` 数据库端口，应连接 HAProxy 入口，并具备连接失败重试能力。
+应用侧不要直接连接 `:3306` 数据库端口。k3s 内通过 `mysql-ha` ClusterIP 进入；k3s 外通过两台数据节点 HAProxy 地址进入。
 
 ### Redis 与 RabbitMQ
 
-Redis 是 session 关键依赖。v1 需要明确 Redis 的可用性级别：
+Redis 是 session 关键依赖，v1 固定为 Redis Sentinel 模式，不使用单实例 Redis 承载生产 session：
 
-- 若 Redis 只用于 session，可以先采用主从/哨兵或单实例加备份，根据服务容忍度决定。
-- 若 Redis 承载队列、限流、缓存穿透保护等关键业务状态，应按高可用组件单独设计。
+- Redis server pods 运行在两台工作/数据节点上，一主一从，使用 anti-affinity 分散到不同节点。
+- Sentinel 运行 3 副本，分布在控制节点与两台工作节点上，用于发现和切换 Redis master。
+- Redis 开启 AOF `everysec`，数据目录使用 Longhorn PVC，并配置外部备份。
+- 新服务优先使用支持 Sentinel 的 Redis client，连接 3 个 Sentinel 地址和 master name。
+- 对暂不支持 Sentinel 的旧服务，平台提供 in-cluster `redis-master` TCP Service，由 HAProxy/健康检查只路由到当前 Redis master。
+- Redis 只作为 session 与轻量缓存的 v1 公共能力。若某服务把 Redis 用作不可丢业务队列、强一致计数或核心状态存储，该服务需要单独评审，不能默认套用 session Redis。
 
-RabbitMQ 是否进入 k3s 或使用独立部署，应按当前服务依赖盘点决定。若 RabbitMQ 是核心业务队列，应避免仅单实例无备份运行。
+RabbitMQ 不纳入 v1 平台核心能力。依赖 RabbitMQ 的服务有两种路径：迁移 Web 服务但继续连接现有外部 RabbitMQ；或在迁移前单独设计 RabbitMQ HA。没有明确 RabbitMQ HA 设计前，不把核心队列服务迁入“自动恢复”承诺范围。
 
 ## Caddy 入口与切流
 
@@ -252,6 +287,38 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 - 健康检查方式。
 - 回滚配置。
 - 切流时间与观察窗口。
+
+## 状态迁移一致性
+
+“不停机迁移”不能只看容器是否能启动，必须避免旧 VPS 与新 k3s PVC/数据库之间出现双边写入。
+
+### 文件目录迁移
+
+文件目录按“单写者”原则迁移：
+
+1. **初始同步**：旧 VPS 继续接生产流量；使用 `rsync -aHAX --numeric-ids` 或等价工具把关键目录同步到临时 staging 目录，再导入 Longhorn PVC。
+2. **持续增量同步**：初始同步后，使用定时 rsync 或 lsyncd 把旧 VPS 的新增文件持续同步到 PVC。此阶段新 k3s 服务只能做内部健康检查，不接生产写流量。
+3. **切换前 drain**：从 Caddy upstream 移除旧 VPS 或把旧服务置为只读/停止接新请求，等待已有连接耗尽。
+4. **最终增量同步**：执行最后一次带校验的增量同步，必要时使用 `--delete` 对齐删除状态，并记录文件数、总大小和抽样 checksum。
+5. **新服务接流量**：确认 k3s pod 挂载 PVC 后读写正常，再把 Caddy upstream 切到 k3s。
+6. **回滚窗口**：旧 VPS 在观察期内保留但不再接写流量。若需要回滚，必须先确认新 PVC 产生的新写入如何同步回旧 VPS；无法反向同步的服务只能回滚应用版本，不能直接把流量切回旧文件状态。
+
+如果某个服务在迁移窗口内必须持续写本地文件，且不支持只读模式、双写或共享挂载，那么严格零停机迁移不可保证。该服务需要先改造文件写入路径，或接受一次按 drain 控制的短切换窗口。
+
+### 数据库迁移
+
+数据库迁移与 Web 切流分开执行，不能在同一个窗口里同时换数据库和换应用入口。
+
+支持两类路径：
+
+- **复制追平路径**：当现网数据库版本、binlog/WAL 和网络条件允许时，新 HA 集群先作为现网数据库的 replica 或逻辑订阅端接入，完成初始 seed 后持续追平。切换时先阻止旧应用写入，等待复制延迟归零，提升新 HA 集群为写入口，再更新应用连接到 `postgres-ha`/`mysql-ha`。
+- **备份恢复路径**：当无法建立在线复制时，使用逻辑备份或物理备份恢复到新 HA 集群。该路径需要明确维护窗口或只读窗口，不标记为严格不停机。
+
+数据库切换回滚必须提前定义：
+
+- 切换前旧库保留只读快照和备份。
+- 切换后新库产生写入，直接回切旧库会丢写入，除非已建立反向复制或有可验证的增量回放方案。
+- 首个服务试点阶段只迁低风险服务，验证连接、延迟和备份恢复后再扩大范围。
 
 ## 不停机迁移 runbook
 
@@ -283,9 +350,9 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 ### 3. 状态外置改造
 
 - 内存 session 改为 Redis session。
-- 关键文件目录同步到 Longhorn PVC。
+- 关键文件目录按“初始同步 → 持续增量同步 → drain → 最终增量同步 → 切流”迁入 Longhorn PVC。
 - 缓存、日志、临时目录从业务持久状态中移除。
-- 数据库连接改为 HAProxy 入口。
+- 数据库连接改为 k3s 内部 `postgres-ha`/`mysql-ha` Service；k3s 外服务使用两台节点级 HAProxy 地址。
 - 敏感配置改为 k3s Secret。
 
 ### 4. k3s 预部署
@@ -330,12 +397,13 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 | 单个工作节点故障 | pods 调度到另一工作节点；Longhorn 降级运行 |
 | PostgreSQL 主节点故障 | Patroni 提升从库，HAProxy 指向新主 |
 | MySQL 主节点故障 | Replication Manager 提升从库，HAProxy 指向新主 |
-| 控制/仲裁节点故障 | 已有服务继续运行；数据库自动切换能力降级，需尽快恢复 |
+| 控制/仲裁节点故障 | 已有 pod 继续运行；k3s API、发布、扩缩容、节点加入和重新调度不可用；数据库自动切换能力降级，需尽快恢复 |
 | 前端 Caddy 故障 | v1 单点，需人工恢复 |
 | 两台工作节点同时故障 | 依赖备份恢复 |
 | Longhorn 卷双副本同时不可用 | 依赖 Longhorn 备份恢复 |
 | 服务仍使用本地关键状态 | 不进入自动迁移池 |
 | 网络分区 | 数据库 HA 控制面尽力避免双写；旧主回归需要巡检确认 |
+| Redis master 故障 | Sentinel 提升 replica，`redis-master` 入口指向新 master；应用需具备重连 |
 
 ## 监控与告警
 
@@ -360,13 +428,16 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 - MySQL：周期性逻辑备份或物理备份，并定期做恢复演练。
 - Longhorn：关键 PVC 配置快照和外部备份目标。
 - Caddy：配置文件纳入版本管理或独立备份。
-- k3s：关键 manifests、Secrets 的可恢复副本；Secrets 备份要加密保存。
+- k3s：关键 manifests、Secrets 的可恢复副本；单 server SQLite datastore 周期性备份；Secrets 备份要加密保存。
+- Redis：AOF/RDB 文件和 Longhorn PVC 备份；验证 Sentinel failover 后 session 读写。
 
 恢复演练至少覆盖：
 
 - 单服务从备份恢复文件目录。
 - 数据库从备份恢复到测试实例。
 - 新节点加入后重建 Longhorn 副本。
+- k3s server 从 datastore 备份或 manifests 重建。
+- Redis master 故障后 Sentinel 提升与应用重连。
 - Caddy upstream 配置回滚。
 
 ## 安全与网络
@@ -375,7 +446,7 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 
 - 公网只暴露现有 Caddy 入口和必要 SSH 运维入口。
 - k3s API、Longhorn、数据库、HAProxy 管理端口不对公网开放。
-- Caddy 到 k3s 入口只允许必要源 IP。
+- Caddy 到 k3s 入口只允许前端 Caddy 服务器源 IP 访问工作节点 `30080`。
 - 节点间放行 k3s、Longhorn、数据库 HA 和复制所需端口。
 - 数据库应用端口只允许 k3s 节点或指定应用网段访问。
 - 所有数据库密码、Redis 密码、RabbitMQ 密码、镜像仓库凭据进入 Secret 或 600 权限文件，不写入 README 示例真实值。
@@ -390,9 +461,9 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 - readiness/liveness probe 可用。
 - session 已使用 Redis，或明确标记为单实例不可自动迁移。
 - 本地文件目录已分类。
-- 关键文件目录已挂 Longhorn PVC。
+- 关键文件目录已按迁移一致性流程同步并挂 Longhorn PVC。
 - 日志、缓存、临时文件未放入 Longhorn。
-- 数据库连接已指向 HAProxy 入口。
+- 数据库连接已指向 k3s 内部 `postgres-ha`/`mysql-ha` Service，或 k3s 外双 HAProxy 地址。
 - 配置和密钥已迁入 ConfigMap/Secret。
 - Caddy upstream 有回滚配置。
 - 监控可看到服务错误率和延迟。
@@ -400,16 +471,14 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 
 ## 实施分解
 
-后续 implementation plan 应拆成以下工作包，避免一次性大改：
+后续 implementation plan 按里程碑拆分，而不是一次性大改：
 
-1. **现状盘点工具/模板**：生成每个服务的迁移清单，记录镜像、端口、目录、session、数据库和 Caddy upstream。
-2. **k3s 基础模块**：安装 k3s server/agent、节点标签、基础网络、与防火墙模块对接。
-3. **Longhorn 部署与存储约定**：安装 Longhorn、配置默认 StorageClass、备份目标和 PVC 模板。
-4. **Redis session 约定**：定义 Redis 部署方式、连接 Secret 和应用迁移要求。
-5. **Web 服务 manifest 模板**：Deployment/Service/Ingress/PVC/Secret/ConfigMap 模板和健康检查约定。
-6. **Caddy 切流 runbook**：upstream 灰度、回滚、连接耗尽和旧 VPS 下线步骤。
-7. **数据库 HA 接入**：把现有 PG/MySQL HA 脚本作为目标数据层，补充与 k3s 应用连接的文档和验证。
-8. **监控备份 runbook**：定义巡检命令、告警项、备份恢复演练。
+1. **基础设施与网络**：k3s server/agent 安装、Traefik NodePort 入口、节点标签、防火墙白名单、Caddy 到 k3s upstream 契约。
+2. **数据面与备份**：Longhorn、Redis Sentinel、in-cluster DB HAProxy router、k3s datastore 备份、数据库/Longhorn/Redis 恢复演练。
+3. **现状盘点与迁移模板**：生成每个服务的迁移清单，记录镜像、端口、目录、session、数据库、RabbitMQ 依赖和 Caddy upstream。
+4. **首个试点服务迁移**：选择低风险 Go 服务，完成 session Redis、文件 PVC、数据库连接、manifest、Caddy 灰度和回滚验证。
+5. **按批次迁移剩余服务**：按风险分批迁移，仍依赖本地状态或核心 RabbitMQ 的服务进入单独改造队列。
+6. **旧 VPS drain 与下线**：按服务确认无新请求、无本地新增写入、备份完整，再释放旧机器。
 
 ## 验证策略
 
@@ -449,15 +518,19 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 | 数据库自动 failover 后旧主回归异常 | 使用现有 HA 巡检脚本；旧主回归必须校验后再纳入流量 |
 | 一次迁移过多服务难以回滚 | 按服务逐个迁移，Caddy upstream 作为第一回滚点 |
 | 控制节点资源不足 | 控制节点只运行轻量组件，不承载 Web 和数据库数据 |
+| 单 k3s server 丢失 | 备份 SQLite datastore；manifests 作为真源；演练重建 server |
+| Redis 成为 session 单点 | Redis Sentinel + AOF + Longhorn PVC + 外部备份；应用重连验证 |
+| 文件迁移期间双边写入 | 单写者原则；最终 drain + 增量同步后才切流 |
 | 备份不可恢复 | 定期恢复演练，不只检查备份任务成功 |
 
 ## 成功标准
 
 - 第三台对等独立机上线后，两台工作节点均能承载 Web pods 和 Longhorn 副本。
+- Caddy 可以通过两台工作节点的 `:30080` NodePort 访问 k3s Traefik，并按域名路由到目标 Service。
 - 一个低风险 Go 服务可从旧 VPS 灰度迁移到 k3s，并可通过 Caddy upstream 快速回滚。
 - 迁移后的服务在 pod 重建或单工作节点 drain 后仍能恢复。
-- Redis session 生效，跨 pod 请求不导致登录状态丢失。
+- Redis Sentinel session 层生效，跨 pod 请求不导致登录状态丢失；Redis master 故障后应用可重连。
 - 关键文件目录通过 Longhorn PVC 挂载，跨节点恢复后文件可读写。
-- 应用数据库连接通过 MySQL/PostgreSQL HAProxy 入口。
+- k3s 内应用数据库连接通过 `postgres-ha`/`mysql-ha` ClusterIP 入口；k3s 外应用使用两台节点级 HAProxy 地址。
 - 单个数据库主节点故障时，HAProxy 最终指向新主。
 - 旧 VPS 可按 runbook drain 并下线，不出现新增本地写入。
