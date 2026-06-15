@@ -37,7 +37,7 @@
 - 当前运行服务：SSH、系统基础服务、watchdog 等，无 Docker/k3s/数据库运行态
 - 适合角色：k3s server、数据库仲裁、轻量监控、备份编排、运维控制
 
-### ks3 节点机器 `worker-01`
+### k3s 节点机器 `worker-01`
 
 - 主机名：`reliablesite`
 - 系统：Ubuntu 24.04 LTS，kernel `6.8.0-31-generic`
@@ -134,6 +134,8 @@ v1 固定以下入口契约，避免实施时在 NodePort、ServiceLB、hostNetw
 - Traefik 暴露为固定 NodePort：`30080` 用于 HTTP 后端流量；`30443` 预留给需要 Caddy 到后端 TLS 的服务，v1 默认不用。
 - Caddy upstream 指向两台工作/数据节点的 `http://<worker-ip>:30080`，保留原始 `Host` 头，由 Traefik Ingress 按域名路由到对应 Service。
 - Caddy 不把流量发到控制节点的 NodePort；防火墙只允许 Caddy 前端服务器访问工作节点 `30080`。
+- Caddy 必须启用 upstream 主动健康检查与被动失败摘除。主动检查访问 k3s 内专用 `edge-health` Ingress，例如 `Host: k3s-health.internal` + `GET /-/edge-health`，只验证该 worker 上的 Traefik/NodePort 路径可用；服务级健康仍由 readiness probe 和 Traefik 路由控制。
+- Caddy 被动失败策略应在连续失败或 5xx 达到阈值时临时摘除该 worker upstream，并在恢复健康后自动加入。手工 drain 工作节点前，先从对应服务的 Caddy upstream 移除该 worker 或把权重降为 0，再执行 k3s drain。
 - 每个服务在 k3s 内必须有 readiness probe。Traefik 只把流量转给 ready pod，Caddy upstream 只负责节点级后端可达性。
 
 这意味着前端切流的基本单元是 Caddy upstream：旧 VPS upstream 与新 k3s worker NodePort upstream 可以并存，按服务逐步切换。
@@ -145,6 +147,7 @@ v1 固定以下入口契约，避免实施时在 NodePort、ServiceLB、hostNetw
 - `postgres-ha` ClusterIP Service：由 2 个 in-cluster HAProxy pod 承载，backend 指向两台数据节点的 `:5000`。
 - `mysql-ha` ClusterIP Service：由 2 个 in-cluster HAProxy pod 承载，backend 指向两台数据节点的 `:6446`。
 - in-cluster HAProxy 做 TCP 健康检查与连接重试；后端地址固定为两台数据节点的 HAProxy。
+- 两个 HAProxy pod 必须通过 `podAntiAffinity` 或 `topologySpreadConstraints` 分散到两台工作节点，并配置 PDB，避免维护或单节点故障时两个副本同时不可用。
 - k3s 内应用连接 `postgres-ha.<namespace>:5432` 和 `mysql-ha.<namespace>:3306`。
 - k3s 外应用若直接接数据库 HA，仍必须配置两台数据节点 HAProxy 地址并启用重试，不能只写单个节点地址。
 
@@ -267,6 +270,7 @@ Redis 是 session 关键依赖，v1 固定为 Redis Sentinel 模式，不使用�
 - Redis 开启 AOF `everysec`，数据目录使用 Longhorn PVC，并配置外部备份。
 - 新服务优先使用支持 Sentinel 的 Redis client，连接 3 个 Sentinel 地址和 master name。
 - 对暂不支持 Sentinel 的旧服务，平台提供 in-cluster `redis-master` TCP Service，由 HAProxy/健康检查只路由到当前 Redis master。
+- `redis-master` 路由层必须至少 2 副本，并通过 `podAntiAffinity` 或 `topologySpreadConstraints` 分散到两台工作节点；Sentinel 副本也要尽量跨控制节点和两台工作节点分布。
 - Redis 只作为 session 与轻量缓存的 v1 公共能力。若某服务把 Redis 用作不可丢业务队列、强一致计数或核心状态存储，该服务需要单独评审，不能默认套用 session Redis。
 
 RabbitMQ 不纳入 v1 平台核心能力。依赖 RabbitMQ 的服务有两种路径：迁移 Web 服务但继续连接现有外部 RabbitMQ；或在迁移前单独设计 RabbitMQ HA。没有明确 RabbitMQ HA 设计前，不把核心队列服务迁入“自动恢复”承诺范围。
@@ -313,6 +317,14 @@ Caddy 配置应按服务拆分，避免一次变更影响所有域名。每个�
 
 - **复制追平路径**：当现网数据库版本、binlog/WAL 和网络条件允许时，新 HA 集群先作为现网数据库的 replica 或逻辑订阅端接入，完成初始 seed 后持续追平。切换时先阻止旧应用写入，等待复制延迟归零，提升新 HA 集群为写入口，再更新应用连接到 `postgres-ha`/`mysql-ha`。
 - **备份恢复路径**：当无法建立在线复制时，使用逻辑备份或物理备份恢复到新 HA 集群。该路径需要明确维护窗口或只读窗口，不标记为严格不停机。
+
+数据库切换前必须设置一致性门槛：
+
+- 提前进入 DDL 冻结窗口，禁止结构变更、账号权限变更和未纳入迁移计划的定时任务写入。
+- 复制追平路径要求复制延迟达到阈值，默认切换时为 0 或业务明确接受的秒级阈值。
+- 对核心库表执行行数、关键索引/约束、触发器/函数/视图、账号权限和抽样 checksum 校验。
+- 应用进入短暂只读或停止写入窗口后，再做最终复制追平和校验。
+- promotion 前必须有可回滚快照、备份完成记录、应用连接串变更记录和 Caddy 切流计划。
 
 数据库切换回滚必须提前定义：
 
