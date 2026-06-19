@@ -195,23 +195,24 @@ pg_ha_status_degradation() {
 pg_ha_status_ingress() {
   case "${PG_HA_DETECTED_ROLE}" in primary|replica) ;; *) return 0 ;; esac
   status_section "入口一致性"
+  local ingress_title="PostgreSQL HAProxy 写入口"
   local pass; pass="$(status_extract_kv "${PG_HA_HAPROXY_CFG}" 's/.*stats auth admin:\(.*\)/\1/p')"
-  [[ -n "$pass" ]] || { status_warn "HAProxy stats" "无法从 haproxy.cfg 提取 stats 凭据"; return 0; }
+  [[ -n "$pass" ]] || { status_warn "PostgreSQL HAProxy stats" "无法从 haproxy.cfg 提取 stats 凭据"; return 0; }
   _pg_up_count() {
     status_curl_cred admin "$pass" -fsS "http://127.0.0.1:${PG_HA_PROXY_STATS_PORT}/;csv" 2>/dev/null \
       | awk -F, '$1=="pg_primary" && $18=="UP" {n++} END{print n+0}'
   }
   local up; up="$(_pg_up_count)"
   if [[ "$up" == "1" ]]; then
-    status_ok "HAProxy 写入口" "唯一 UP 后端"
+    status_ok "$ingress_title" "唯一 UP 后端"
   else
     _pg_probe_ingress() { [[ "$(_pg_up_count)" == "1" ]]; }
     local rc=0; status_recheck _pg_probe_ingress || rc=$?
     case "$rc" in
-      0)  status_ok   "HAProxy 写入口" "复采为唯一 UP 后端" ;;
-      10) status_warn "HAProxy 写入口" "首检 UP 后端数=${up}，复采已恢复(疑似切换中)" ;;
-      *)  if [[ "$up" == "0" ]]; then status_crit "HAProxy 写入口" "无 UP 后端(当前无写入口)"
-          else status_crit "HAProxy 写入口" "${up} 个后端同时 UP(路由错乱/双主嫌疑)"; fi ;;
+      0)  status_ok   "$ingress_title" "复采为唯一 UP 后端" ;;
+      10) status_warn "$ingress_title" "首检 UP 后端数=${up}，复采已恢复(疑似切换中)" ;;
+      *)  if [[ "$up" == "0" ]]; then status_crit "$ingress_title" "无 UP 后端(当前无写入口)"
+          else status_crit "$ingress_title" "${up} 个后端同时 UP(路由错乱/双主嫌疑)"; fi ;;
     esac
   fi
   return 0

@@ -654,6 +654,25 @@ run_pg_status_tests() {
 
   assert_function_exists pg_ha_status_ingress
 
+  # 入口一致性:两后端同时 UP 时，CRIT 标题必须标明 PostgreSQL，避免与 MySQL 混淆。
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_HAPROXY_CFG="${tdir}/pg-haproxy.cfg" STATUS_RECHECK_DELAY=0
+    printf 'listen stats\n    stats auth admin:statspw\n' >"${PG_HA_HAPROXY_CFG}"
+    status_curl_cred() {
+      local i
+      for _node in node1 node2; do
+        printf 'pg_primary,%s' "$_node"
+        for i in {3..17}; do printf ','; done
+        printf ',UP\n'
+      done
+    }
+    status_reset
+    local out; out="$(pg_ha_status_ingress)"
+    case "$out" in *"[CRIT] PostgreSQL HAProxy 写入口 — 2 个后端同时 UP"*) ;; *) fail "expected PostgreSQL-qualified HAProxy CRIT, got: $out" ;; esac
+    case "$out" in *"[CRIT] HAProxy 写入口"*) fail "expected unqualified HAProxy ingress title to be removed" ;; esac )
+
   # 磁盘:使用率超 CRIT 线 -> CRIT（quorum 节点，无 inactive 槽联动）
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"

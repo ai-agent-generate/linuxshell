@@ -126,6 +126,25 @@ run_mysql_status_tests() {
   assert_function_exists mysql_ha_status_topology
   assert_function_exists mysql_ha_status_ingress
 
+  # 入口一致性:两后端同时 UP 时，CRIT 标题必须标明 MySQL，避免与 PostgreSQL 混淆。
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary
+    export MYSQL_HA_HAPROXY_CFG="${tdir}/mysql-haproxy.cfg" STATUS_RECHECK_DELAY=0
+    printf 'listen stats\n    stats auth admin:statspw\n' >"${MYSQL_HA_HAPROXY_CFG}"
+    status_curl_cred() {
+      local i
+      for _node in node1 node2; do
+        printf 'mysql_primary,%s' "$_node"
+        for i in {3..17}; do printf ','; done
+        printf ',UP\n'
+      done
+    }
+    status_reset
+    local out; out="$(mysql_ha_status_ingress)"
+    case "$out" in *"[CRIT] MySQL HAProxy 写入口 — 2 个后端同时 UP"*) ;; *) fail "expected MySQL-qualified HAProxy CRIT, got: $out" ;; esac
+    case "$out" in *"[CRIT] HAProxy 写入口"*) fail "expected unqualified HAProxy ingress title to be removed" ;; esac )
+
   # 磁盘:超 CRIT 线 -> CRIT
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
