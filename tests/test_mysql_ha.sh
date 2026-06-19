@@ -126,6 +126,29 @@ run_mysql_status_tests() {
   assert_function_exists mysql_ha_status_topology
   assert_function_exists mysql_ha_status_ingress
 
+  # 入口一致性:HAProxy CSV 的 BACKEND 汇总行即使 UP，也不能算作可写 server 后端。
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"
+    MYSQL_HA_DETECTED_ROLE=primary
+    export MYSQL_HA_HAPROXY_CFG="${tdir}/mysql-haproxy-backend.cfg" STATUS_RECHECK_DELAY=0
+    printf 'listen stats\n    stats auth admin:statspw\n' >"${MYSQL_HA_HAPROXY_CFG}"
+    status_curl_cred() {
+      local i
+      printf 'mysql_primary,node1'
+      for i in {3..17}; do printf ','; done
+      printf ',DOWN\n'
+      printf 'mysql_primary,node2'
+      for i in {3..17}; do printf ','; done
+      printf ',UP\n'
+      printf 'mysql_primary,BACKEND'
+      for i in {3..17}; do printf ','; done
+      printf ',UP\n'
+    }
+    status_reset
+    local out; out="$(mysql_ha_status_ingress)"
+    case "$out" in *"[OK  ] MySQL HAProxy 写入口 — 唯一 UP 后端"*) ;; *) fail "expected one real MySQL server backend UP, got: $out" ;; esac
+    case "$out" in *"[CRIT]"*) fail "BACKEND summary row must not trigger MySQL ingress CRIT: $out" ;; esac )
+
   # 入口一致性:两后端同时 UP 时，CRIT 标题必须标明 MySQL，避免与 PostgreSQL 混淆。
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     source "${ROOT_DIR}/lib/mysql-ha/config.sh"; source "${ROOT_DIR}/lib/mysql-ha/status.sh"

@@ -624,6 +624,21 @@ run_pg_status_tests() {
     pg_ha_status_local_psql() { echo "dead_slot"; }
     status_reset; pg_ha_status_degradation
     assert_equals "1" "${STATUS_WARN_COUNT}" )
+  # 静默退化:patronictl 表格中的 Lag=0 不能被误识别为 TL=0 分叉
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    export PG_HA_PATRONI_YAML="${tdir}/patroni.yml"; : >"${PG_HA_PATRONI_YAML}"
+    PG_HA_DETECTED_ROLE=primary
+    command_exists() { [[ "$1" == patronictl ]]; }
+    pg_ha_status_local_psql() { echo ""; }
+    patronictl() {
+      printf '+ Cluster: pg-ha +----+-------------+-----+------------+-----+\n'
+      printf '| Member | Host | Role | State | TL | Receive LSN | Lag | Replay LSN | Lag |\n'
+      printf '| node1 | 10.0.0.1 | Replica | streaming | 4 | 0/A | 0 | 0/A | 0 |\n'
+      printf '| node2 | 10.0.0.2 | Leader | running | 4 | | | | |\n'
+    }
+    status_reset; pg_ha_status_degradation
+    assert_equals "0" "${STATUS_WARN_COUNT}" )
 
   # 防脑裂:两节点 /primary 都 200 -> 多主 CRIT
   # NODE3_IP 未设，etotal=2 不触发 etcd quorum 检查（<3），原断言不受影响
@@ -653,6 +668,29 @@ run_pg_status_tests() {
     [[ "${STATUS_WARN_COUNT}" -ge 1 ]] || fail "expected etcd quorum WARN when only 2/3 members healthy" )
 
   assert_function_exists pg_ha_status_ingress
+
+  # 入口一致性:HAProxy CSV 的 BACKEND 汇总行即使 UP，也不能算作可写 server 后端。
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_HAPROXY_CFG="${tdir}/pg-haproxy-backend.cfg" STATUS_RECHECK_DELAY=0
+    printf 'listen stats\n    stats auth admin:statspw\n' >"${PG_HA_HAPROXY_CFG}"
+    status_curl_cred() {
+      local i
+      printf 'pg_primary,node1'
+      for i in {3..17}; do printf ','; done
+      printf ',DOWN\n'
+      printf 'pg_primary,node2'
+      for i in {3..17}; do printf ','; done
+      printf ',UP\n'
+      printf 'pg_primary,BACKEND'
+      for i in {3..17}; do printf ','; done
+      printf ',UP\n'
+    }
+    status_reset
+    local out; out="$(pg_ha_status_ingress)"
+    case "$out" in *"[OK  ] PostgreSQL HAProxy 写入口 — 唯一 UP 后端"*) ;; *) fail "expected one real PostgreSQL server backend UP, got: $out" ;; esac
+    case "$out" in *"[CRIT]"*) fail "BACKEND summary row must not trigger PostgreSQL ingress CRIT: $out" ;; esac )
 
   # 入口一致性:两后端同时 UP 时，CRIT 标题必须标明 PostgreSQL，避免与 MySQL 混淆。
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"

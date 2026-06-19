@@ -185,7 +185,13 @@ pg_ha_status_degradation() {
       status_ok "Patroni 维护模式" "未暂停"
     fi
     local tls tlcount
-    tls="$(printf '%s\n' "$pls" | grep -oE '\| *[0-9]+ *\|' | grep -oE '[0-9]+' | sort -un)"
+    tls="$(printf '%s\n' "$pls" | awk -F'|' '
+      /^\|/ && $0 !~ /Member|---/ {
+        tl=$6
+        gsub(/[[:space:]]/, "", tl)
+        if (tl ~ /^[0-9]+$/) print tl
+      }
+    ' | sort -un)"
     tlcount="$(printf '%s\n' "$tls" | grep -c . || true)"
     [[ "$tlcount" -gt 1 ]] && status_warn "时间线(TL)分叉" "节点 TL 不一致($(printf '%s' "$tls" | tr '\n' ' '))，可能发生过未对齐切换"
   fi
@@ -200,7 +206,7 @@ pg_ha_status_ingress() {
   [[ -n "$pass" ]] || { status_warn "PostgreSQL HAProxy stats" "无法从 haproxy.cfg 提取 stats 凭据"; return 0; }
   _pg_up_count() {
     status_curl_cred admin "$pass" -fsS "http://127.0.0.1:${PG_HA_PROXY_STATS_PORT}/;csv" 2>/dev/null \
-      | awk -F, '$1=="pg_primary" && $18=="UP" {n++} END{print n+0}'
+      | awk -F, '$1=="pg_primary" && $2!="BACKEND" && $2!="FRONTEND" && $18=="UP" {n++} END{print n+0}'
   }
   local up; up="$(_pg_up_count)"
   if [[ "$up" == "1" ]]; then

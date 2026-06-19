@@ -191,7 +191,7 @@ mysql_ha_status_ingress() {
   [[ -n "$pass" ]] || { status_warn "MySQL HAProxy stats" "无法提取 stats 凭据"; return 0; }
   _my_up_count() {
     status_curl_cred admin "$pass" -fsS "http://127.0.0.1:${MYSQL_HA_PROXY_STATS_PORT}/;csv" 2>/dev/null \
-      | awk -F, '$1=="mysql_primary" && $18=="UP" {n++} END{print n+0}'
+      | awk -F, '$1=="mysql_primary" && $2!="BACKEND" && $2!="FRONTEND" && $18=="UP" {n++} END{print n+0}'
   }
   local up; up="$(_my_up_count)"
   if [[ "$up" == "1" ]]; then status_ok "$ingress_title" "唯一 UP 后端"
