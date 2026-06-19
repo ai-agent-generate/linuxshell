@@ -564,6 +564,23 @@ run_pg_status_tests() {
     export PG_HA_PATRONI_YAML="${tdir}/none.yml" PG_HA_ETCD_CONFIG_FILE="${tdir}/etcd.conf.yml"
     pg_ha_status_detect_role; assert_equals "quorum" "${PG_HA_DETECTED_ROLE}" )
 
+  # 身份:同机存在 MySQL HA 数据节点时，PG 巡检也要展示 MySQL 角色摘要。
+  # 真实节点可能只有 mysqlchk.cnf / zz-mysql-ha-prep.cnf，不一定已有最终 zz-mysql-ha.cnf。
+  ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
+    source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"
+    PG_HA_DETECTED_ROLE=primary
+    export PG_HA_NODE1_IP=10.0.0.1 PG_HA_NODE2_IP=10.0.0.2 PG_HA_NODE3_IP=10.0.0.3
+    export MYSQL_HA_MYCNF="${tdir}/missing-zz-mysql-ha.cnf"
+    export MYSQL_HA_PREP_CNF="${tdir}/zz-mysql-ha-prep.cnf"
+    export MYSQL_HA_MYSQLCHK_CNF="${tdir}/mysqlchk.cnf"
+    export MYSQL_HA_REPMAN_CONF="${tdir}/missing-repman.toml"
+    : >"${MYSQL_HA_PREP_CNF}"; : >"${MYSQL_HA_MYSQLCHK_CNF}"
+    hostname() { echo pg-node; }
+    mysql() { echo 0; }
+    status_reset
+    local out; out="$(pg_ha_status_identity)"
+    case "$out" in *"[OK  ] 本机 MySQL 角色 — primary (MySQL 主库, read_only=0)"*) ;; *) fail "expected PG identity to include MySQL primary role, got: $out" ;; esac )
+
   # 服务检查:active+enabled -> OK；failed -> CRIT
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     source "${ROOT_DIR}/lib/pg-ha/config.sh"; source "${ROOT_DIR}/lib/pg-ha/status.sh"

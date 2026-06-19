@@ -45,6 +45,27 @@ pg_ha_status_detect_role() {
   return 0
 }
 
+pg_ha_status_mysql_role_summary() {
+  local mycnf="${MYSQL_HA_MYCNF:-/etc/mysql/mysql.conf.d/zz-mysql-ha.cnf}"
+  local prep_cnf="${MYSQL_HA_PREP_CNF:-/etc/mysql/mysql.conf.d/zz-mysql-ha-prep.cnf}"
+  local repman_conf="${MYSQL_HA_REPMAN_CONF:-/etc/replication-manager/config.toml}"
+  local mysqlchk_cnf="${MYSQL_HA_MYSQLCHK_CNF:-/etc/mysql/mysqlchk.cnf}"
+  if [[ -e "$mycnf" || -e "$prep_cnf" || -e "$mysqlchk_cnf" ]]; then
+    local ro
+    if command_exists mysql && [[ -r "$mysqlchk_cnf" ]]; then
+      ro="$(mysql --defaults-extra-file="$mysqlchk_cnf" -N -B -e 'SELECT @@global.read_only' 2>/dev/null || true)"
+    fi
+    case "$ro" in
+      0) status_ok   "本机 MySQL 角色" "primary (MySQL 主库, read_only=0)" ;;
+      1) status_ok   "本机 MySQL 角色" "replica (MySQL 从库, read_only=1)" ;;
+      *) status_warn "本机 MySQL 角色" "检测到 MySQL HA 数据节点配置，但无法读取 read_only" ;;
+    esac
+  elif [[ -e "$repman_conf" ]]; then
+    status_ok "本机 MySQL 角色" "arbiter (仅 Replication Manager 仲裁，不跑 MySQL)"
+  fi
+  return 0
+}
+
 pg_ha_status_identity() {
   status_section "本机身份"
   status_kv "集群名" "${PG_HA_CLUSTER_NAME}"
@@ -65,6 +86,7 @@ pg_ha_status_identity() {
     quorum)  status_ok   "本机角色" "etcd-quorum (仅仲裁，不跑 PG)" ;;
     *)       status_warn "本机角色" "无法确定(patroni.yml/etcd 配置缺失或本机 PG 不可连)" ;;
   esac
+  pg_ha_status_mysql_role_summary
   return 0
 }
 
