@@ -64,13 +64,13 @@ ha_status_dispatch() {
 }
 
 ha_status_run() {
-  require_root || return 4
   # 第一批:公共库 + 两套 config(纯赋值，供 ha_status_detect_stack 读路径变量)
   load_linuxshell_modules \
     lib/common.sh \
     lib/status-common.sh \
     lib/pg-ha/config.sh \
     lib/mysql-ha/config.sh
+  require_root || return 4
   ha_status_dispatch "${1:-}"
 }
 

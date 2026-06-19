@@ -744,6 +744,12 @@ run_ha_status_entry_tests() {
   assert_contains "$entry" "require_root"
 
   local tdir; tdir="$(mktemp -d)"; trap "rm -rf '$tdir'" RETURN
+  # 真实入口必须先加载 lib/common.sh，再调用 require_root；覆盖 bash <(curl ...) 场景。
+  ( source "${ROOT_DIR}/ha-status.sh"
+    local rc=0 err
+    err="$(ha_status_run bogus 2>&1 >/dev/null)" || rc=$?
+    assert_equals "4" "$rc"
+    case "$err" in *"require_root: command not found"*) fail "ha_status_run called require_root before loading lib/common.sh" ;; esac )
   # none -> 退出码 3
   ( source "${ROOT_DIR}/lib/common.sh"; source "${ROOT_DIR}/lib/status-common.sh"
     source "${ROOT_DIR}/ha-status.sh"
