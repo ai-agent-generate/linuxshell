@@ -105,6 +105,17 @@ pg_query() {
   printf '%s' "$out" | tr -d '[:space:]'
 }
 
+# 探测当前 PG 角色:primary|standby|role_unknown
+pg_detect_role() {
+  local r
+  r="$(pg_query postgres 'SELECT pg_is_in_recovery();' 2>/dev/null || true)"
+  case "$r" in
+    f|false) printf 'primary' ;;
+    t|true)  printf 'standby' ;;
+    *)       printf 'role_unknown'; return 1 ;;
+  esac
+}
+
 # 只读检测
 pg_assert_writable() {
   local r; r="$(pg_query postgres 'SELECT pg_is_in_recovery();')"

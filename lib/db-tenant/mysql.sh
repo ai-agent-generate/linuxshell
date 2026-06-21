@@ -108,6 +108,17 @@ mysql_query() {
   return 0
 }
 
+# 探测当前 MySQL 角色:primary|replica|role_unknown
+mysql_detect_role() {
+  local r
+  r="$(mysql_query 'SELECT @@global.super_read_only + @@global.read_only;' 2>/dev/null || true)"
+  case "$r" in
+    0) printf 'primary' ;;
+    ''|*[!0-9]*) printf 'role_unknown'; return 1 ;;
+    *) printf 'replica' ;;
+  esac
+}
+
 # 只读检测
 mysql_assert_writable() {
   local r; r="$(mysql_query 'SELECT @@global.super_read_only + @@global.read_only;')"

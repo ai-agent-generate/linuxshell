@@ -567,6 +567,7 @@ run_dispatch_tests() {
   assert_function_exists db_tenant_action_menu
   assert_function_exists db_tenant_drop_action
   assert_function_exists db_tenant_backup_action
+  assert_function_exists db_tenant_target_summary
 
   local tmp; tmp="$(mktemp -d)"; trap "rm -rf '$tmp'" RETURN
   local log="${tmp}/dispatch.log"
@@ -629,6 +630,21 @@ run_dispatch_tests() {
     assert_str_contains "$out" "LOCKED db_tenant_drop_action"
     assert_str_missing "$out" "LOCKED pg_list_tenants"
     assert_str_missing "$out" "LOCKED db_tenant_backup_action" )
+
+  # 启动确认应同时展示 docker/local 形态和主从角色，避免只看到 local 无法判断写入节点。
+  ( source "${ROOT_DIR}/lib/db-tenant/config.sh"; source "${ROOT_DIR}/lib/common.sh"
+    source "${ROOT_DIR}/lib/db-tenant/common.sh"; source "${ROOT_DIR}/lib/db-tenant/pg.sh"
+    source "${ROOT_DIR}/lib/db-tenant/mysql.sh"; source "${ROOT_DIR}/lib/db-tenant/main.sh"
+    PG_TARGET_MODE=local
+    pg_query() { echo "f"; }
+    assert_equals "pg / local / primary" "$(db_tenant_target_summary pg)"
+    pg_query() { echo "t"; }
+    assert_equals "pg / local / standby" "$(db_tenant_target_summary pg)"
+    MYSQL_TARGET_MODE=local
+    mysql_query() { echo "0"; }
+    assert_equals "mysql / local / primary" "$(db_tenant_target_summary mysql)"
+    mysql_query() { echo "2"; }
+    assert_equals "mysql / local / replica" "$(db_tenant_target_summary mysql)" )
 }
 
 run_docs_tests() {

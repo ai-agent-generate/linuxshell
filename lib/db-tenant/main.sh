@@ -67,6 +67,19 @@ MENU
   done
 }
 
+db_tenant_target_summary() {
+  local engine="$1" mode role
+  if [[ "$engine" == "pg" ]]; then
+    mode="${PG_TARGET_MODE:-?}"
+    role="$(pg_detect_role 2>/dev/null || true)"
+  else
+    mode="${MYSQL_TARGET_MODE:-?}"
+    role="$(mysql_detect_role 2>/dev/null || true)"
+  fi
+  [[ -n "$role" ]] || role="role_unknown"
+  printf '%s / %s / %s' "$engine" "$mode" "$role"
+}
+
 db_tenant_main() {
   require_root || return 1
   local engine_choice engine
@@ -82,9 +95,7 @@ MENU
     2) engine=mysql; mysql_detect_target; mysql_resolve_admin_password ;;
     *) echo "无效引擎" >&2; return 1 ;;
   esac
-  local mode
-  if [[ "$engine" == "pg" ]]; then mode="${PG_TARGET_MODE:-?}"; else mode="${MYSQL_TARGET_MODE:-?}"; fi
-  echo "目标形态: ${engine} / ${mode}" >&2
+  echo "目标形态: $(db_tenant_target_summary "$engine")" >&2
   if ! prompt_yes_no "确认对该目标操作?" "y"; then echo "已取消。" >&2; return 0; fi
   db_tenant_action_menu "$engine"
 }
